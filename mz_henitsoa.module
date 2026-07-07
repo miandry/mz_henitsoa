@@ -1,0 +1,185 @@
+<?php
+
+/**
+ * @file
+ * Contains mz_henitsoa.module.
+ */
+
+use Drupal\Core\Routing\RouteMatchInterface;
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Url;
+use Drupal\node\NodeInterface;
+
+/**
+* Implements hook_help().
+ */
+function mz_henitsoa_help($route_name, RouteMatchInterface $route_match) {
+    switch ($route_name) {
+        // Main module help for the mz_henitsoa module.
+        case 'help.page.mz_henitsoa':
+            $output = '';
+            $output .= '<h3>' . t('About') . '</h3>';
+            $output .= '<p>' . t('mz_henitsoa entity api') . '</p>';
+            return $output;
+        default:
+    }
+}
+
+/**
+ * Implements hook_entity_operation().
+ */
+function mz_henitsoa_entity_operation_alter(array &$operations, EntityInterface $entity) {
+    $entityTypeId = $entity->getEntityTypeId();
+    $bundle = $entity->bundle();
+    $id = $entity->id();
+    if($entityTypeId == 'node' && $bundle == 'inscription'){
+            $editUrl = Url::fromRoute('mz_henitsoa.controller' ,
+                ['id' => $id ]);
+            $operations['download_carnet'] = array(
+                'title' => t('Telecharger le carnet'),
+                'weight' => 20,
+                'url' => $editUrl,
+            );
+    }else{
+          return ;
+    }
+}
+/**
+ * Implements hook_form_BASE_FORM_ID_alter().
+ */
+function mz_henitsoa_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+
+  if($form_id == 'node_inscription_edit_form'){
+     $form['title']['widget'][0]['value']['#attributes'] = ['readonly' => 'readonly'];
+     $form['field_ecolage_status']['#attributes']['class'][] = 'readonly-checkboxes';
+    
+  }
+   if($form_id == 'node_inscription_form' ){
+      $date = new DateTime();
+      $dateFormatted = $date->format('Ymd');
+      $uniqueId = uniqid();
+      $randomId = $dateFormatted . '_' . $uniqueId;
+      $form['title']['widget'][0]['value']['#default_value'] =   $randomId;
+      $form['title']['#attributes'] = ['style' => 'display:none'];
+      $form['field_ecolage_status']['#attributes']['class'][] = 'readonly-checkboxes';
+      $form['#validate'][] = '_unique_inscript_validate';
+
+   }
+   if($form_id == 'node_ecolage_form'){
+      $date = new DateTime();
+      $dateFormatted = $date->format('Ymd');
+      $uniqueId = uniqid();
+      $randomId = $dateFormatted . '_' . $uniqueId;
+      $form['title']['widget'][0]['value']['#default_value'] =   $randomId;
+      $form['title']['#attributes'] = ['style' => 'display:none'];
+      $form['#validate'][] = '_unique_title_validate';
+   }
+   if($form_id == 'node_ecolage_edit_form'){
+      $form['#validate'][] = '_unique_title_validate';
+   }
+}
+
+/**
+ * Custom validation handler for node titles.
+ */
+function _unique_inscript_validate($form, FormStateInterface $form_state) {
+  $an_id = $form_state->getValue('field_annee_scolaire')[0]['value'];
+  $el_id = $form_state->getValue('field_eleve')[0]['target_id'];
+  $eleve = \Drupal::entityTypeManager()->getStorage('node')->load( $el_id );
+  $service = \Drupal::service('mz_henitsoa.default');
+  $name = $service->getFullName($eleve);
+  $status = $service->checkifInscrExist(  $el_id  , $an_id );
+  if ($status) {
+    $form_state->setErrorByName('field_eleve', t("L'élève @el pour le annee scolaire de @an existe déjà."  , ['@el' =>   $name,'@an' => $an_id ]));
+  }
+}
+/**
+ * Custom validation handler for node titles.
+ */
+function _unique_title_validate($form, FormStateInterface $form_state) {
+  $mois_id = $form_state->getValue('field_mois')[0]['target_id'];
+  $inscript_id = $form_state->getValue('field_inscrit')[0]['target_id'];
+  $mois = \Drupal::entityTypeManager()->getStorage('node')->load($mois_id);
+  $ins = \Drupal::entityTypeManager()->getStorage('node')->load($inscript_id);
+
+  $mois_name =    $mois->label() ;
+  $inscr_name =    $ins->label() ;
+  $status = \Drupal::service('mz_henitsoa.default')->checkifEcolageExist($inscript_id , $mois_id );
+  // If a node with the same title exists, set a form error.
+  if ($status) {
+    $form_state->setErrorByName('field_mois', t('Ecolage pour le mois de @mois de @el existe déjà.'  , ['@el' =>   $inscr_name,'@mois' => $mois_name ]));
+  }
+}
+
+function mz_henitsoa_preprocess_block(&$variables) {
+  
+  if($variables['plugin_id'] == 'page_title_block'){
+    
+    // $helper = \Drupal::service('drupal.helper')->helper;
+    // $helper_node = \Drupal::service('drupal.helper')->node;
+    // $alias = $helper->current_url_alias();
+    // if($route == 'entity.node.canonical'){
+    //     //$helper_node->getNodeByAlias( $alias);
+    //     // kint($variables['content']['#title']); die();
+    // }
+  
+  }
+}
+/**
+ * Implements hook_ENTITY_TYPE_presave().
+ *
+ * Save the first value of field_article_tags to field_article_main_tag.
+ *
+ * @param \Drupal\node\NodeInterface $node
+ */
+
+ function mz_henitsoa_node_presave(NodeInterface $node) {
+      if($node->bundle() == "inscription"){
+        $eleve =  $node->field_eleve->entity ;
+        $title =  $eleve->field_nom->value ." ".$eleve->field_prenom->value ;
+        $node->title->value = $title ;
+      }
+
+    
+
+ }
+ function mz_henitsoa_node_delete(NodeInterface $node) {
+  if($node->bundle() == "ecolage"){
+    $ins = $node->field_inscrit->entity;
+    \Drupal::service('mz_henitsoa.default')->unCheckEcolage($ins , $node);
+  }
+ }
+ function mz_henitsoa_node_insert(NodeInterface $node) {
+  if($node->bundle() == "ecolage"){
+    $ins = $node->field_inscrit->entity;
+    \Drupal::service('mz_henitsoa.default')->checkEcolage($ins , $node);
+  }
+ }
+ function mz_henitsoa_node_update(NodeInterface $node) {
+  if($node->bundle() == "ecolage"){
+    $ins = $node->field_inscrit->entity;
+    \Drupal::service('mz_henitsoa.default')->checkEcolage($ins , $node);
+  }
+ }
+
+/**
+ * Implements hook_page_attachments_alter().
+ *
+ * Disables pinch-zoom on the henitsoaapp Vue.js shell (/app/*) so it feels
+ * like a native mobile app, without changing the viewport behavior of the
+ * rest of the site (core sets a permissive viewport meta tag by default).
+ */
+function mz_henitsoa_page_attachments_alter(array &$page) {
+  $route_name = \Drupal::routeMatch()->getRouteName();
+  if (!in_array($route_name, ['mz_henitsoa.app', 'mz_henitsoa.app_subpath'], TRUE)) {
+    return;
+  }
+  foreach ($page['#attached']['html_head'] as &$item) {
+    if (($item[1] ?? '') === 'viewport') {
+      $item[0]['#attributes']['content'] = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+    }
+  }
+}
+
+

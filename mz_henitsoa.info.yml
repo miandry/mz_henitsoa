@@ -1,0 +1,14 @@
+name: 'mz_henitsoa'
+type: module
+description: 'mz_henitsoa'
+package: 'Custom'
+core_version_requirement: ^8 || ^9
+# Information added by Drupal.org packaging script on 2020-04-27
+# version: '1.0.2'
+# project: 'mz_crud'
+# datestamp: 1587994643
+
+# Information added by Drupal.org packaging script on 2021-05-25
+version: '1.0.6'
+project: 'henitsoa'
+datestamp: 1621949415

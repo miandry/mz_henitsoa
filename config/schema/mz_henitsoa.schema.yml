@@ -1,0 +1,7 @@
+mz_henitsoa.settings:
+  type: config_object
+  label: 'Henitsoa settings'
+  mapping:
+    carnet_template_path:
+      type: string
+      label: 'Carnet DOCX template path'

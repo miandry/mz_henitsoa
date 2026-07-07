@@ -1,0 +1,270 @@
+mz_henitsoa.controller:
+  path: '/admin/build'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::build'
+    _title: 'Techargement document'
+  requirements:
+     _permission: 'access administration pages'
+  options:
+     _admin_route: TRUE
+
+mz_henitsoa.app:
+  path: '/app'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::app'
+    _title: 'Henitsoa App'
+  requirements:
+     _permission: 'access content'
+
+# Catches every sub-path of the Vue Router (history mode), e.g. /app/classes,
+# so deep links and page refreshes inside the SPA don't 404 in Drupal.
+#
+# Drupal's route provider matches candidate routes by exact path-segment
+# count before applying the requirement regex, so a single-parameter route
+# (however permissive its regex) never matches a 3-segment path like
+# /app/eleves-inscrits/3365 — hence the second, explicit 2-parameter route
+# below for detail pages (/app/{section}/{id}).
+mz_henitsoa.app_subpath:
+  path: '/app/{vue_path}'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::app'
+    _title: 'Henitsoa App'
+    vue_path: ''
+  requirements:
+     vue_path: '.*'
+     _permission: 'access content'
+
+mz_henitsoa.app_subpath_detail:
+  path: '/app/{section}/{id}'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::app'
+    _title: 'Henitsoa App'
+  requirements:
+     section: '.+'
+     id: '.+'
+     _permission: 'access content'
+
+mz_henitsoa.api_inscriptions:
+  path: '/api/inscriptions'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::listInscriptions'
+  methods: [GET]
+  requirements:
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_archives:
+  path: '/api/archives'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::listArchives'
+  methods: [GET]
+  requirements:
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_classes:
+  path: '/api/classes'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::listClasses'
+  methods: [GET]
+  requirements:
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_matieres:
+  path: '/api/matieres'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::listMatieres'
+  methods: [GET]
+  requirements:
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_classes_create:
+  path: '/api/classes'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::createClasse'
+  methods: [POST]
+  requirements:
+     _permission: 'create terms in classe'
+     _csrf_request_header_token: 'TRUE'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_matieres_create:
+  path: '/api/matieres'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::createMatiere'
+  methods: [POST]
+  requirements:
+     _permission: 'create terms in matiere'
+     _csrf_request_header_token: 'TRUE'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_etudiants_search:
+  path: '/api/etudiants'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::searchEtudiants'
+  methods: [GET]
+  requirements:
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_etudiants_create:
+  path: '/api/etudiants'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::createEtudiant'
+  methods: [POST]
+  requirements:
+     _permission: 'create etudiant content'
+     _csrf_request_header_token: 'TRUE'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_inscriptions_create:
+  path: '/api/inscriptions'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::createInscription'
+  methods: [POST]
+  requirements:
+     _permission: 'create inscription content'
+     _csrf_request_header_token: 'TRUE'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_ecolages:
+  path: '/api/ecolages'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::listEcolages'
+  methods: [GET]
+  requirements:
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_ecolages_create:
+  path: '/api/ecolages'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::createEcolage'
+  methods: [POST]
+  requirements:
+     _permission: 'create ecolage content'
+     _csrf_request_header_token: 'TRUE'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_ecolages_form_options:
+  path: '/api/ecolages/form-options'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::getEcolageFormOptions'
+  methods: [GET]
+  requirements:
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_inscription_detail:
+  path: '/api/inscriptions/{id}'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::getInscriptionDetail'
+  methods: [GET]
+  requirements:
+     id: '\d+'
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_archive_detail:
+  path: '/api/archives/{id}'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::getArchiveDetail'
+  methods: [GET]
+  requirements:
+     id: '\d+'
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_archive_update:
+  path: '/api/archives/{id}'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::updateArchive'
+  methods: [PATCH]
+  requirements:
+     id: '\d+'
+     _permission: 'edit etudiant content'
+     _csrf_request_header_token: 'TRUE'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_archive_photo:
+  path: '/api/archives/{id}/photo'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::uploadArchivePhoto'
+  methods: [POST]
+  requirements:
+     id: '\d+'
+     _permission: 'edit etudiant content'
+     _csrf_request_header_token: 'TRUE'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_classe_detail:
+  path: '/api/classes/{id}'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::getClasseDetail'
+  methods: [GET]
+  requirements:
+     id: '\d+'
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_matiere_detail:
+  path: '/api/matieres/{id}'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::getMatiereDetail'
+  methods: [GET]
+  requirements:
+     id: '\d+'
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_ecolage_detail:
+  path: '/api/ecolages/{id}'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::getEcolageDetail'
+  methods: [GET]
+  requirements:
+     id: '\d+'
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_carnet_config:
+  path: '/api/config/carnet'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::getCarnetConfig'
+  methods: [GET]
+  requirements:
+     _permission: 'administer site configuration'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_carnet_config_update:
+  path: '/api/config/carnet'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::updateCarnetConfig'
+  methods: [PATCH]
+  requirements:
+     _permission: 'administer site configuration'
+     _csrf_request_header_token: 'TRUE'
+  options:
+     no_cache: TRUE
