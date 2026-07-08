@@ -267,7 +267,11 @@ class HenitsoaController extends ControllerBase {
       $classe_key = $classe ? (string) $classe->id() : '_none';
 
       if (!isset($by_classe[$classe_key])) {
-        $by_classe[$classe_key] = ['classe' => $classe_label, 'count' => 0];
+        $by_classe[$classe_key] = [
+          'classe' => $classe_label,
+          'count' => 0,
+          'id' => $classe ? (int) $classe->id() : NULL,
+        ];
       }
       $by_classe[$classe_key]['count']++;
 
@@ -336,7 +340,7 @@ class HenitsoaController extends ControllerBase {
           'nom' => trim($eleve->get('field_nom')->value . ' ' . $eleve->get('field_prenom')->value),
           'classe' => $classe_label,
           'detail' => 'Manque : ' . implode(', ', $missing),
-          'url' => '/app/archives-eleves/' . $eleve->id(),
+          'url' => '/app/eleves-inscrits/' . $node->id(),
           'source' => 'live',
         ];
       }
@@ -530,7 +534,7 @@ class HenitsoaController extends ControllerBase {
           'title' => $node->label(),
           'date' => date('Y-m-d H:i', $node->getCreatedTime()),
           'timestamp' => $node->getCreatedTime(),
-          'url' => $meta['url_prefix'] . $node->id(),
+          'url' => $this->resolveDashboardActivityUrl($node, $meta['url_prefix']),
           'source' => 'live',
         ];
       }
@@ -544,6 +548,34 @@ class HenitsoaController extends ControllerBase {
   }
 
   /**
+   * Resolves dashboard activity links to inscription detail when possible.
+   */
+  protected function resolveDashboardActivityUrl(Node $node, string $default_prefix): string {
+    if ($node->bundle() === 'inscription') {
+      return '/app/eleves-inscrits/' . $node->id();
+    }
+
+    if ($node->bundle() === 'etudiant') {
+      $annee_scolaire = $this->getCurrentSchoolYear();
+      if ($annee_scolaire) {
+        $ids = \Drupal::entityQuery('node')
+          ->condition('type', 'inscription')
+          ->condition('field_eleve', $node->id())
+          ->condition('field_annee_scolaire', $annee_scolaire)
+          ->accessCheck(FALSE)
+          ->sort('created', 'DESC')
+          ->range(0, 1)
+          ->execute();
+        if (!empty($ids)) {
+          return '/app/eleves-inscrits/' . (int) reset($ids);
+        }
+      }
+    }
+
+    return $default_prefix . $node->id();
+  }
+
+  /**
    * Static alert samples for modules not yet in the system.
    */
   protected function getDashboardStaticAlerts(): array {
@@ -554,7 +586,7 @@ class HenitsoaController extends ControllerBase {
         'nom' => 'Rakoto Jean',
         'classe' => '3ème A',
         'detail' => 'Absent le ' . date('d/m/Y', strtotime('-1 day')),
-        'url' => '/app/archives-eleves',
+        'url' => '/app/eleves-inscrits',
         'source' => 'static',
       ],
       [
@@ -1987,6 +2019,71 @@ class HenitsoaController extends ControllerBase {
       'status' => 'success',
       'item' => $service->getTemplateConfigInfo(),
     ]);
+  }
+
+  /**
+   * JSON listing of school activities.
+   */
+  public function listActivites(Request $request) {
+    $result = \Drupal::service('mz_henitsoa.activite')->listActivites($request);
+    $status = ($result['status'] ?? '') === 'error' ? 400 : 200;
+    return new JsonResponse($result, $status);
+  }
+
+  /**
+   * Form options for activity management screens.
+   */
+  public function getActiviteFormOptions() {
+    return new JsonResponse(\Drupal::service('mz_henitsoa.activite')->getFormOptions());
+  }
+
+  /**
+   * Creates a new activity node.
+   */
+  public function createActivite(Request $request) {
+    $data = json_decode($request->getContent(), TRUE) ?: [];
+    $result = \Drupal::service('mz_henitsoa.activite')->createActivite($data);
+    $status = ($result['status'] ?? '') === 'error' ? 422 : 201;
+    return new JsonResponse($result, $status);
+  }
+
+  /**
+   * Activity detail with participants, inscriptions and payments.
+   */
+  public function getActiviteDetail(int $id) {
+    $result = \Drupal::service('mz_henitsoa.activite')->getActiviteDetail($id);
+    $status = ($result['status'] ?? '') === 'error' ? 404 : 200;
+    return new JsonResponse($result, $status);
+  }
+
+  /**
+   * Updates an existing activity node.
+   */
+  public function updateActivite(int $id, Request $request) {
+    $data = json_decode($request->getContent(), TRUE) ?: [];
+    $result = \Drupal::service('mz_henitsoa.activite')->updateActivite($id, $data);
+    $status = ($result['status'] ?? '') === 'error' ? 422 : 200;
+    return new JsonResponse($result, $status);
+  }
+
+  /**
+   * Registers a student for an activity (inscription only).
+   */
+  public function createActiviteParticipation(int $id, Request $request) {
+    $data = json_decode($request->getContent(), TRUE) ?: [];
+    $result = \Drupal::service('mz_henitsoa.activite')->createParticipation($id, $data);
+    $status = ($result['status'] ?? '') === 'error' ? 422 : 201;
+    return new JsonResponse($result, $status);
+  }
+
+  /**
+   * Records a payment linked to an activity.
+   */
+  public function createActivitePaiement(int $id, Request $request) {
+    $data = json_decode($request->getContent(), TRUE) ?: [];
+    $result = \Drupal::service('mz_henitsoa.activite')->createPaiement($id, $data);
+    $status = ($result['status'] ?? '') === 'error' ? 422 : 201;
+    return new JsonResponse($result, $status);
   }
 
 }

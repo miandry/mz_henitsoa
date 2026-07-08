@@ -9,6 +9,7 @@ use Drupal\Core\Entity\Entity\EntityFormDisplay;
 use Drupal\Core\Entity\Entity\EntityViewDisplay;
 use Drupal\field\Entity\FieldConfig;
 use Drupal\field\Entity\FieldStorageConfig;
+use Drupal\node\Entity\Node;
 
 /**
  * Add payment date and montant fields to inscription nodes.
@@ -96,5 +97,310 @@ function _mz_henitsoa_ensure_inscription_payment_fields() {
       ]);
     }
     $view_display->save();
+  }
+}
+
+/**
+ * Creates activity-related content types and fields.
+ */
+function mz_henitsoa_update_9002() {
+  _mz_henitsoa_ensure_activite_content_types();
+}
+
+/**
+ * Ensures activite, participation_activite and paiement bundles exist.
+ */
+function _mz_henitsoa_ensure_activite_content_types() {
+  $node_types = [
+    'activite' => 'Activité',
+    'participation_activite' => 'Participation activité',
+    'paiement' => 'Paiement',
+  ];
+  foreach ($node_types as $machine_name => $label) {
+    if (!\Drupal\node\Entity\NodeType::load($machine_name)) {
+      \Drupal\node\Entity\NodeType::create([
+        'type' => $machine_name,
+        'name' => $label,
+      ])->save();
+    }
+  }
+
+  _mz_henitsoa_ensure_list_field('activite', 'field_type_activite', 'Type d\'activité', [
+    'fete_ecole' => "Fête de l'école",
+    'voyage_etude' => "Voyage d'étude",
+    'fete_noel' => 'Fête de Noël',
+    'autre' => 'Autre',
+  ]);
+  _mz_henitsoa_ensure_date_field('activite', 'field_date_activite', 'Date de l\'activité');
+  _mz_henitsoa_ensure_date_field('activite', 'field_date_limite_inscription', 'Date limite d\'inscription');
+  _mz_henitsoa_ensure_integer_field('activite', 'field_montant_participation', 'Montant de participation');
+  _mz_henitsoa_ensure_integer_field('activite', 'field_objectif_collecte', 'Objectif de collecte');
+  _mz_henitsoa_ensure_boolean_field('activite', 'field_participation_obligatoire', 'Participation obligatoire');
+  _mz_henitsoa_ensure_list_field('activite', 'field_statut_activite', 'Statut de l\'activité', [
+    'planifiee' => 'Planifiée',
+    'en_cours' => 'En cours',
+    'terminee' => 'Terminée',
+    'annulee' => 'Annulée',
+  ], 'planifiee');
+  _mz_henitsoa_ensure_text_field('activite', 'field_description', 'Description', 'text_long');
+  _mz_henitsoa_ensure_term_reference_field('activite', 'field_classes_cibles', 'Classes cibles', 'classe', -1);
+  _mz_henitsoa_ensure_activite_annee_scolaire_field();
+
+  _mz_henitsoa_ensure_node_reference_field('participation_activite', 'field_eleve', 'Élève', ['etudiant']);
+  _mz_henitsoa_ensure_node_reference_field('participation_activite', 'field_activite', 'Activité', ['activite']);
+  _mz_henitsoa_ensure_list_field('participation_activite', 'field_statut_participation', 'Statut participation', [
+    'inscrit' => 'Inscrit',
+    'confirme' => 'Confirmé',
+    'annule' => 'Annulé',
+  ], 'inscrit');
+
+  _mz_henitsoa_ensure_node_reference_field('paiement', 'field_eleve', 'Élève', ['etudiant']);
+  _mz_henitsoa_ensure_node_reference_field('paiement', 'field_activite', 'Activité', ['activite']);
+  _mz_henitsoa_ensure_term_reference_field('paiement', 'field_type_frais', 'Type de frais', 'categorie_caisse', 1);
+  _mz_henitsoa_ensure_string_field('paiement', 'field_periode', 'Période');
+  _mz_henitsoa_ensure_integer_field('paiement', 'field_montant_du', 'Montant dû');
+  _mz_henitsoa_ensure_integer_field('paiement', 'field_montant_paye', 'Montant payé');
+  _mz_henitsoa_ensure_date_field('paiement', 'field_date_paiement', 'Date de paiement');
+  _mz_henitsoa_ensure_list_field('paiement', 'field_mode_paiement', 'Mode de paiement', [
+    'especes' => 'Espèces',
+    'virement' => 'Virement',
+    'cheque' => 'Chèque',
+    'mobile_money' => 'Mobile money',
+  ], 'especes');
+  _mz_henitsoa_ensure_string_field('paiement', 'field_numero_recu', 'Numéro de reçu');
+}
+
+/**
+ * Creates a list_string field storage + bundle field if missing.
+ */
+function _mz_henitsoa_ensure_list_field(string $bundle, string $field_name, string $label, array $allowed_values, ?string $default = NULL) {
+  if (!FieldStorageConfig::loadByName('node', $field_name)) {
+    FieldStorageConfig::create([
+      'field_name' => $field_name,
+      'entity_type' => 'node',
+      'type' => 'list_string',
+      'cardinality' => 1,
+      'settings' => ['allowed_values' => $allowed_values],
+    ])->save();
+  }
+
+  if (!FieldConfig::loadByName('node', $bundle, $field_name)) {
+    FieldConfig::create([
+      'field_storage' => FieldStorageConfig::loadByName('node', $field_name),
+      'bundle' => $bundle,
+      'label' => $label,
+      'required' => FALSE,
+      'default_value' => $default ? [['value' => $default]] : [],
+    ])->save();
+  }
+}
+
+/**
+ * Creates a datetime field.
+ */
+function _mz_henitsoa_ensure_date_field(string $bundle, string $field_name, string $label) {
+  if (!FieldStorageConfig::loadByName('node', $field_name)) {
+    FieldStorageConfig::create([
+      'field_name' => $field_name,
+      'entity_type' => 'node',
+      'type' => 'datetime',
+      'cardinality' => 1,
+      'settings' => ['datetime_type' => 'date'],
+    ])->save();
+  }
+
+  if (!FieldConfig::loadByName('node', $bundle, $field_name)) {
+    FieldConfig::create([
+      'field_storage' => FieldStorageConfig::loadByName('node', $field_name),
+      'bundle' => $bundle,
+      'label' => $label,
+      'required' => FALSE,
+    ])->save();
+  }
+}
+
+/**
+ * Creates an integer field.
+ */
+function _mz_henitsoa_ensure_integer_field(string $bundle, string $field_name, string $label) {
+  if (!FieldStorageConfig::loadByName('node', $field_name)) {
+    FieldStorageConfig::create([
+      'field_name' => $field_name,
+      'entity_type' => 'node',
+      'type' => 'integer',
+      'cardinality' => 1,
+      'settings' => ['unsigned' => FALSE, 'size' => 'normal'],
+    ])->save();
+  }
+
+  if (!FieldConfig::loadByName('node', $bundle, $field_name)) {
+    FieldConfig::create([
+      'field_storage' => FieldStorageConfig::loadByName('node', $field_name),
+      'bundle' => $bundle,
+      'label' => $label,
+      'required' => FALSE,
+    ])->save();
+  }
+}
+
+/**
+ * Creates a boolean field.
+ */
+function _mz_henitsoa_ensure_boolean_field(string $bundle, string $field_name, string $label) {
+  if (!FieldStorageConfig::loadByName('node', $field_name)) {
+    FieldStorageConfig::create([
+      'field_name' => $field_name,
+      'entity_type' => 'node',
+      'type' => 'boolean',
+      'cardinality' => 1,
+    ])->save();
+  }
+
+  if (!FieldConfig::loadByName('node', $bundle, $field_name)) {
+    FieldConfig::create([
+      'field_storage' => FieldStorageConfig::loadByName('node', $field_name),
+      'bundle' => $bundle,
+      'label' => $label,
+      'required' => FALSE,
+    ])->save();
+  }
+}
+
+/**
+ * Creates a text field.
+ */
+function _mz_henitsoa_ensure_text_field(string $bundle, string $field_name, string $label, string $type = 'string') {
+  if (!FieldStorageConfig::loadByName('node', $field_name)) {
+    FieldStorageConfig::create([
+      'field_name' => $field_name,
+      'entity_type' => 'node',
+      'type' => $type,
+      'cardinality' => 1,
+    ])->save();
+  }
+
+  if (!FieldConfig::loadByName('node', $bundle, $field_name)) {
+    FieldConfig::create([
+      'field_storage' => FieldStorageConfig::loadByName('node', $field_name),
+      'bundle' => $bundle,
+      'label' => $label,
+      'required' => FALSE,
+    ])->save();
+  }
+}
+
+/**
+ * Creates a plain string field.
+ */
+function _mz_henitsoa_ensure_string_field(string $bundle, string $field_name, string $label) {
+  _mz_henitsoa_ensure_text_field($bundle, $field_name, $label, 'string');
+}
+
+/**
+ * Creates a taxonomy term reference field.
+ */
+function _mz_henitsoa_ensure_term_reference_field(string $bundle, string $field_name, string $label, string $vocabulary, int $cardinality = 1) {
+  if (!FieldStorageConfig::loadByName('node', $field_name)) {
+    FieldStorageConfig::create([
+      'field_name' => $field_name,
+      'entity_type' => 'node',
+      'type' => 'entity_reference',
+      'cardinality' => $cardinality,
+      'settings' => [
+        'target_type' => 'taxonomy_term',
+      ],
+    ])->save();
+  }
+
+  if (!FieldConfig::loadByName('node', $bundle, $field_name)) {
+    FieldConfig::create([
+      'field_storage' => FieldStorageConfig::loadByName('node', $field_name),
+      'bundle' => $bundle,
+      'label' => $label,
+      'required' => FALSE,
+      'settings' => [
+        'handler' => 'default:taxonomy_term',
+        'handler_settings' => [
+          'target_bundles' => [$vocabulary => $vocabulary],
+        ],
+      ],
+    ])->save();
+  }
+}
+
+/**
+ * Creates a node entity reference field.
+ */
+function _mz_henitsoa_ensure_node_reference_field(string $bundle, string $field_name, string $label, array $target_bundles) {
+  if (!FieldStorageConfig::loadByName('node', $field_name)) {
+    FieldStorageConfig::create([
+      'field_name' => $field_name,
+      'entity_type' => 'node',
+      'type' => 'entity_reference',
+      'cardinality' => 1,
+      'settings' => [
+        'target_type' => 'node',
+      ],
+    ])->save();
+  }
+
+  if (!FieldConfig::loadByName('node', $bundle, $field_name)) {
+    $handler_settings = ['target_bundles' => []];
+    foreach ($target_bundles as $target_bundle) {
+      $handler_settings['target_bundles'][$target_bundle] = $target_bundle;
+    }
+    FieldConfig::create([
+      'field_storage' => FieldStorageConfig::loadByName('node', $field_name),
+      'bundle' => $bundle,
+      'label' => $label,
+      'required' => FALSE,
+      'settings' => [
+        'handler' => 'default:node',
+        'handler_settings' => $handler_settings,
+      ],
+    ])->save();
+  }
+}
+
+/**
+ * Adds school year field to activite nodes and backfills existing records.
+ */
+function mz_henitsoa_update_9003() {
+  _mz_henitsoa_ensure_activite_annee_scolaire_field();
+}
+
+/**
+ * Ensures activite nodes have field_annee_scolaire (reuses inscription storage).
+ */
+function _mz_henitsoa_ensure_activite_annee_scolaire_field() {
+  $storage = FieldStorageConfig::loadByName('node', 'field_annee_scolaire');
+  if (!$storage) {
+    return;
+  }
+
+  if (!FieldConfig::loadByName('node', 'activite', 'field_annee_scolaire')) {
+    FieldConfig::create([
+      'field_storage' => $storage,
+      'bundle' => 'activite',
+      'label' => 'Année scolaire',
+      'required' => FALSE,
+    ])->save();
+  }
+
+  $default_year = trim((string) \Drupal::service('carnet_henitsoa')->getConfiguredSchoolYear());
+  if ($default_year === '') {
+    return;
+  }
+
+  $ids = \Drupal::entityQuery('node')
+    ->condition('type', 'activite')
+    ->accessCheck(FALSE)
+    ->execute();
+
+  foreach (Node::loadMultiple($ids) as $node) {
+    if ($node->hasField('field_annee_scolaire') && $node->get('field_annee_scolaire')->isEmpty()) {
+      $node->set('field_annee_scolaire', $default_year);
+      $node->save();
+    }
   }
 }

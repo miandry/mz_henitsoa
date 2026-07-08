@@ -13,6 +13,9 @@ services:
   mz_henitsoa.ecolage_suivi:
     class: Drupal\mz_henitsoa\EcolageSuiviService
     arguments: []
+  mz_henitsoa.activite:
+    class: Drupal\mz_henitsoa\ActiviteService
+    arguments: []
   mz_henitsoa.app_theme_negotiator:
     class: Drupal\mz_henitsoa\Theme\AppThemeNegotiator
     tags:

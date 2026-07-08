@@ -331,3 +331,81 @@ mz_henitsoa.api_carnet_config_update:
      _csrf_request_header_token: 'TRUE'
   options:
      no_cache: TRUE
+
+mz_henitsoa.api_activites:
+  path: '/api/activites'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::listActivites'
+  methods: [GET]
+  requirements:
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_activites_create:
+  path: '/api/activites'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::createActivite'
+  methods: [POST]
+  requirements:
+     _permission: 'create activite content'
+     _csrf_request_header_token: 'TRUE'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_activites_form_options:
+  path: '/api/activites/form-options'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::getActiviteFormOptions'
+  methods: [GET]
+  requirements:
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_activite_detail:
+  path: '/api/activites/{id}'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::getActiviteDetail'
+  methods: [GET]
+  requirements:
+     id: '\d+'
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_activite_update:
+  path: '/api/activites/{id}'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::updateActivite'
+  methods: [PATCH]
+  requirements:
+     id: '\d+'
+     _permission: 'edit activite content'
+     _csrf_request_header_token: 'TRUE'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_activite_participation_create:
+  path: '/api/activites/{id}/participations'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::createActiviteParticipation'
+  methods: [POST]
+  requirements:
+     id: '\d+'
+     _permission: 'create participation_activite content'
+     _csrf_request_header_token: 'TRUE'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_activite_paiement_create:
+  path: '/api/activites/{id}/paiements'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::createActivitePaiement'
+  methods: [POST]
+  requirements:
+     id: '\d+'
+     _permission: 'create paiement content'
+     _csrf_request_header_token: 'TRUE'
+  options:
+     no_cache: TRUE
