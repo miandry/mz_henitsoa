@@ -1,0 +1,100 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the mz_henitsoa module.
+ */
+
+use Drupal\Core\Entity\Entity\EntityFormDisplay;
+use Drupal\Core\Entity\Entity\EntityViewDisplay;
+use Drupal\field\Entity\FieldConfig;
+use Drupal\field\Entity\FieldStorageConfig;
+
+/**
+ * Add payment date and montant fields to inscription nodes.
+ */
+function mz_henitsoa_update_9001() {
+  _mz_henitsoa_ensure_inscription_payment_fields();
+}
+
+/**
+ * Creates inscription payment fields if they are missing.
+ */
+function _mz_henitsoa_ensure_inscription_payment_fields() {
+  if (!FieldStorageConfig::loadByName('node', 'field_date_payment')) {
+    FieldStorageConfig::create([
+      'field_name' => 'field_date_payment',
+      'entity_type' => 'node',
+      'type' => 'datetime',
+      'cardinality' => 1,
+      'settings' => ['datetime_type' => 'date'],
+    ])->save();
+  }
+
+  if (!FieldConfig::loadByName('node', 'inscription', 'field_date_payment')) {
+    FieldConfig::create([
+      'field_storage' => FieldStorageConfig::loadByName('node', 'field_date_payment'),
+      'bundle' => 'inscription',
+      'label' => 'Date de paiement',
+      'required' => FALSE,
+    ])->save();
+  }
+
+  if (!FieldStorageConfig::loadByName('node', 'field_montant')) {
+    FieldStorageConfig::create([
+      'field_name' => 'field_montant',
+      'entity_type' => 'node',
+      'type' => 'integer',
+      'cardinality' => 1,
+      'settings' => [
+        'unsigned' => FALSE,
+        'size' => 'normal',
+      ],
+    ])->save();
+  }
+
+  if (!FieldConfig::loadByName('node', 'inscription', 'field_montant')) {
+    FieldConfig::create([
+      'field_storage' => FieldStorageConfig::loadByName('node', 'field_montant'),
+      'bundle' => 'inscription',
+      'label' => 'Montant',
+      'required' => FALSE,
+    ])->save();
+  }
+
+  $form_display = EntityFormDisplay::load('node.inscription.default');
+  if ($form_display) {
+    if (!$form_display->getComponent('field_date_payment')) {
+      $form_display->setComponent('field_date_payment', [
+        'type' => 'datetime_default',
+        'weight' => 12,
+      ]);
+    }
+    if (!$form_display->getComponent('field_montant')) {
+      $form_display->setComponent('field_montant', [
+        'type' => 'number',
+        'weight' => 13,
+      ]);
+    }
+    $form_display->save();
+  }
+
+  $view_display = EntityViewDisplay::load('node.inscription.default');
+  if ($view_display) {
+    if (!$view_display->getComponent('field_date_payment')) {
+      $view_display->setComponent('field_date_payment', [
+        'type' => 'datetime_default',
+        'weight' => 12,
+        'label' => 'above',
+      ]);
+    }
+    if (!$view_display->getComponent('field_montant')) {
+      $view_display->setComponent('field_montant', [
+        'type' => 'number_integer',
+        'weight' => 13,
+        'label' => 'above',
+      ]);
+    }
+    $view_display->save();
+  }
+}

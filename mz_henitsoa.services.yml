@@ -10,6 +10,9 @@ services:
   mz_henitsoa.default:
     class: Drupal\mz_henitsoa\ServiceHenitsoa
     arguments: []
+  mz_henitsoa.ecolage_suivi:
+    class: Drupal\mz_henitsoa\EcolageSuiviService
+    arguments: []
   mz_henitsoa.app_theme_negotiator:
     class: Drupal\mz_henitsoa\Theme\AppThemeNegotiator
     tags:

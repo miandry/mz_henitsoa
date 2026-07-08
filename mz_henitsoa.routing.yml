@@ -84,6 +84,16 @@ mz_henitsoa.api_matieres:
   options:
      no_cache: TRUE
 
+mz_henitsoa.api_dashboard:
+  path: '/api/dashboard'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::getDashboardStats'
+  methods: [GET]
+  requirements:
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
 mz_henitsoa.api_classes_create:
   path: '/api/classes'
   defaults:
@@ -138,6 +148,16 @@ mz_henitsoa.api_inscriptions_create:
   options:
      no_cache: TRUE
 
+mz_henitsoa.api_inscriptions_form_options:
+  path: '/api/inscriptions/form-options'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::getInscriptionFormOptions'
+  methods: [GET]
+  requirements:
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
 mz_henitsoa.api_ecolages:
   path: '/api/ecolages'
   defaults:
@@ -169,6 +189,37 @@ mz_henitsoa.api_ecolages_form_options:
   options:
      no_cache: TRUE
 
+mz_henitsoa.api_ecolages_suivi:
+  path: '/api/ecolages/suivi'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::getEcolageSuivi'
+  methods: [GET]
+  requirements:
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_ecolages_suivi_export:
+  path: '/api/ecolages/suivi/export'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::exportEcolageSuivi'
+  methods: [GET]
+  requirements:
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_ecolages_suivi_history:
+  path: '/api/ecolages/suivi/{inscription_id}/history'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::getEcolageSuiviHistory'
+  methods: [GET]
+  requirements:
+     inscription_id: '\d+'
+     _permission: 'access content'
+  options:
+     no_cache: TRUE
+
 mz_henitsoa.api_inscription_detail:
   path: '/api/inscriptions/{id}'
   defaults:
@@ -177,6 +228,18 @@ mz_henitsoa.api_inscription_detail:
   requirements:
      id: '\d+'
      _permission: 'access content'
+  options:
+     no_cache: TRUE
+
+mz_henitsoa.api_inscription_update:
+  path: '/api/inscriptions/{id}'
+  defaults:
+    _controller: '\Drupal\mz_henitsoa\Controller\HenitsoaController::updateInscription'
+  methods: [PATCH]
+  requirements:
+     id: '\d+'
+     _permission: 'edit inscription content'
+     _csrf_request_header_token: 'TRUE'
   options:
      no_cache: TRUE
 

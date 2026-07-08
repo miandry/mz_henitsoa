@@ -10,6 +10,7 @@ use Drupal\node\Entity\Node;
 use Drupal\taxonomy\Entity\Term;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 /**
  * Class HenitsoaController.
  */
@@ -63,10 +64,14 @@ class HenitsoaController extends ControllerBase {
     $page = max((int) $request->query->get('page', 0), 0);
     $limit = min(max((int) $request->query->get('limit', 25), 1), 100);
     $search = trim((string) $request->query->get('search', ''));
+    $annee_scolaire = trim((string) $request->query->get('annee_scolaire', ''));
 
     $query = \Drupal::entityQuery('node')
       ->condition('type', 'inscription')
       ->accessCheck(FALSE);
+    if ($annee_scolaire !== '') {
+      $query->condition('field_annee_scolaire', $annee_scolaire);
+    }
     if ($search !== '') {
       $query->condition('title', $search, 'CONTAINS');
     }
@@ -85,11 +90,13 @@ class HenitsoaController extends ControllerBase {
         'classe' => $classe ? $classe->label() : NULL,
         'eleve_nid' => (int) $node->get('field_eleve')->target_id,
         'photo_url' => $eleve ? $this->getStudentPhotoUrl($eleve) : NULL,
+        'montant' => $this->getInscriptionMontantValue($node),
       ];
     }
 
     return new JsonResponse([
       'status' => 'success',
+      'annee_scolaire' => $annee_scolaire !== '' ? $annee_scolaire : NULL,
       'total' => (int) $total,
       'page' => $page,
       'limit' => $limit,
@@ -191,6 +198,388 @@ class HenitsoaController extends ControllerBase {
       'total' => count($items),
       'items' => $items,
     ]);
+  }
+
+  /**
+   * Dashboard statistics for the current school year.
+   *
+   * Aggregates live data from inscriptions, students and ecolages. Sections
+   * without backing entities (presence, some alerts) return static samples
+   * flagged with source = "static".
+   */
+  public function getDashboardStats() {
+    $school_years = $this->getSchoolYearOptions();
+    $annee_scolaire = $this->getCurrentSchoolYear() ?: ($school_years[0] ?? NULL);
+    $cid = 'mz_henitsoa:dashboard:' . md5((string) $annee_scolaire);
+    $cache = \Drupal::cache()->get($cid);
+    if ($cache) {
+      return new JsonResponse($cache->data);
+    }
+
+    $payload = $this->buildDashboardPayload($annee_scolaire, $school_years);
+    \Drupal::cache()->set(
+      $cid,
+      $payload,
+      \Drupal::time()->getRequestTime() + 300,
+      ['node_list', 'taxonomy_term_list']
+    );
+    return new JsonResponse($payload);
+  }
+
+  /**
+   * Builds the full dashboard API payload.
+   */
+  protected function buildDashboardPayload(?string $annee_scolaire, array $school_years): array {
+    $inscription_ids = [];
+    if ($annee_scolaire) {
+      $inscription_ids = \Drupal::entityQuery('node')
+        ->condition('type', 'inscription')
+        ->condition('field_annee_scolaire', $annee_scolaire)
+        ->accessCheck(FALSE)
+        ->sort('created', 'DESC')
+        ->execute();
+    }
+
+    $genres = $this->getAllowedValues('etudiant', 'field_genre');
+    $by_genre = [];
+    foreach ($genres as $key => $label) {
+      $by_genre[(string) $key] = ['key' => (string) $key, 'label' => $label, 'count' => 0];
+    }
+
+    $by_adresse = [];
+    $by_classe = [];
+    $preview_items = [];
+    $nouveaux_items = [];
+    $nouveaux_count = 0;
+    $nouvelles_inscriptions_mois = 0;
+    $retard_paiement = [];
+    $dossiers_incomplets = [];
+    $mois_terms = $this->getMoisTerms();
+    $mois_count = count($mois_terms);
+    $month_start = strtotime(date('Y-m-01 00:00:00'));
+
+    foreach (Node::loadMultiple(array_values($inscription_ids)) as $node) {
+      $classe = $node->get('field_classe')->entity;
+      $eleve = $node->get('field_eleve')->entity;
+      $classe_label = $classe ? $classe->label() : 'Non assignée';
+      $classe_key = $classe ? (string) $classe->id() : '_none';
+
+      if (!isset($by_classe[$classe_key])) {
+        $by_classe[$classe_key] = ['classe' => $classe_label, 'count' => 0];
+      }
+      $by_classe[$classe_key]['count']++;
+
+      if ($node->getCreatedTime() >= $month_start) {
+        $nouvelles_inscriptions_mois++;
+      }
+
+      if (count($preview_items) < 8) {
+        $preview_items[] = [
+          'id' => (int) $node->id(),
+          'matricule' => $node->label(),
+          'classe' => $classe_label !== 'Non assignée' ? $classe_label : NULL,
+          'photo_url' => $eleve ? $this->getStudentPhotoUrl($eleve) : NULL,
+        ];
+      }
+
+      $paid_months = count($node->get('field_ecolage_status')->getValue());
+      if ($mois_count > 0 && $paid_months < min($mois_count, 3) && count($retard_paiement) < 5) {
+        $retard_paiement[] = [
+          'type' => 'retard_paiement',
+          'label' => 'Retard écolage',
+          'eleve_id' => $eleve ? (int) $eleve->id() : NULL,
+          'inscription_id' => (int) $node->id(),
+          'nom' => $node->label(),
+          'classe' => $classe_label,
+          'detail' => "$paid_months / $mois_count mois payés",
+          'url' => '/app/eleves-inscrits/' . $node->id(),
+          'source' => 'live',
+        ];
+      }
+
+      if (!$eleve) {
+        continue;
+      }
+
+      $genre_value = (string) $eleve->get('field_genre')->value;
+      if (isset($by_genre[$genre_value])) {
+        $by_genre[$genre_value]['count']++;
+      }
+
+      $adresse = trim((string) $eleve->get('field_adresse')->value);
+      $adresse_key = $adresse === '' ? 'Non renseignée' : $adresse;
+      if (!isset($by_adresse[$adresse_key])) {
+        $by_adresse[$adresse_key] = ['adresse' => $adresse_key, 'count' => 0];
+      }
+      $by_adresse[$adresse_key]['count']++;
+
+      $missing = [];
+      if ($adresse === '') {
+        $missing[] = 'adresse';
+      }
+      if (trim((string) $eleve->get('field_phone')->value) === '') {
+        $missing[] = 'téléphone';
+      }
+      if (!$this->getStudentPhotoUrl($eleve)) {
+        $missing[] = 'photo';
+      }
+      if (!empty($missing) && count($dossiers_incomplets) < 5) {
+        $dossiers_incomplets[] = [
+          'type' => 'dossier_incomplet',
+          'label' => 'Dossier incomplet',
+          'eleve_id' => (int) $eleve->id(),
+          'nom' => trim($eleve->get('field_nom')->value . ' ' . $eleve->get('field_prenom')->value),
+          'classe' => $classe_label,
+          'detail' => 'Manque : ' . implode(', ', $missing),
+          'url' => '/app/archives-eleves/' . $eleve->id(),
+          'source' => 'live',
+        ];
+      }
+
+      if ($annee_scolaire && $this->isNewStudentForYear((int) $eleve->id(), $annee_scolaire, $school_years)) {
+        $nouveaux_count++;
+        if (count($nouveaux_items) < 8) {
+          $nouveaux_items[] = [
+            'id' => (int) $eleve->id(),
+            'inscription_id' => (int) $node->id(),
+            'matricule' => $eleve->label(),
+            'nom' => $eleve->get('field_nom')->value,
+            'prenom' => $eleve->get('field_prenom')->value,
+            'classe' => $classe_label !== 'Non assignée' ? $classe_label : NULL,
+            'adresse' => $eleve->get('field_adresse')->value,
+            'date_entre' => $eleve->get('field_date_entre')->value,
+            'photo_url' => $this->getStudentPhotoUrl($eleve),
+          ];
+        }
+      }
+    }
+
+    $par_adresse = array_values($by_adresse);
+    usort($par_adresse, fn($a, $b) => $b['count'] <=> $a['count']);
+
+    $par_classe = array_values($by_classe);
+    usort($par_classe, fn($a, $b) => $b['count'] <=> $a['count']);
+
+    $annee_index = array_search($annee_scolaire, $school_years, TRUE);
+    $annee_precedente = ($annee_index !== FALSE && isset($school_years[$annee_index + 1]))
+      ? $school_years[$annee_index + 1]
+      : NULL;
+
+    $evolution = [];
+    foreach (array_slice($school_years, 0, 2) as $year) {
+      if (!$year) {
+        continue;
+      }
+      $count = \Drupal::entityQuery('node')
+        ->condition('type', 'inscription')
+        ->condition('field_annee_scolaire', $year)
+        ->accessCheck(FALSE)
+        ->count()
+        ->execute();
+      $evolution[] = ['annee' => $year, 'count' => (int) $count];
+    }
+    $evolution = array_reverse($evolution);
+
+    $finances = $this->buildDashboardFinances($annee_scolaire, count($inscription_ids));
+    $activite = $this->buildDashboardActivity();
+    $alerts = array_merge(
+      $retard_paiement,
+      $dossiers_incomplets,
+      $this->getDashboardStaticAlerts()
+    );
+
+    $frais_collectes = $finances['collecte_annee'];
+    $frais_attendus = $finances['attendu_annee'];
+    $frais_pct = $frais_attendus > 0 ? (int) round(($frais_collectes / $frais_attendus) * 100) : 0;
+
+    return [
+      'status' => 'success',
+      'annee_scolaire' => $annee_scolaire,
+      'annee_precedente' => $annee_precedente,
+      'key_stats' => [
+        'total_inscrits' => count($inscription_ids),
+        'par_classe' => $par_classe,
+        'nouvelles_inscriptions_mois' => $nouvelles_inscriptions_mois,
+        'nouvelles_inscriptions_annee' => $nouveaux_count,
+        'presence_jour' => ['value' => 92, 'label' => '92 %', 'source' => 'static'],
+        'frais_collectes' => $frais_collectes,
+        'frais_attendus' => $frais_attendus,
+        'frais_pct' => $frais_pct,
+      ],
+      'total_inscrits' => count($inscription_ids),
+      'nouveaux_etudiants' => $nouveaux_count,
+      'par_genre' => array_values($by_genre),
+      'par_adresse' => $par_adresse,
+      'par_classe' => $par_classe,
+      'inscriptions_evolution' => $evolution,
+      'alerts' => $alerts,
+      'finances' => $finances,
+      'activite_recente' => $activite,
+      'nouveaux_items' => $nouveaux_items,
+      'preview_items' => $preview_items,
+      'modules' => [
+        'presence' => FALSE,
+        'finances_detail' => TRUE,
+      ],
+    ];
+  }
+
+  /**
+   * Finance block for the dashboard (live ecolage + static categories).
+   */
+  protected function buildDashboardFinances(?string $annee_scolaire, int $total_inscrits): array {
+    $collecte_annee = 0;
+    $collecte_mois = 0;
+    $ecolage_total = 0;
+    $inscription_total = 0;
+    $derniers_paiements = [];
+    $month_start = strtotime(date('Y-m-01 00:00:00'));
+
+    if ($annee_scolaire) {
+      $ecolage_ids = \Drupal::entityQuery('node')
+        ->condition('type', 'ecolage')
+        ->condition('field_annee_scolaire', $annee_scolaire)
+        ->accessCheck(FALSE)
+        ->sort('created', 'DESC')
+        ->execute();
+
+      foreach (Node::loadMultiple(array_values($ecolage_ids)) as $node) {
+        $montant = (int) $node->get('field_montant')->value;
+        $ecolage_total += $montant;
+        $collecte_annee += $montant;
+        if ($node->getCreatedTime() >= $month_start) {
+          $collecte_mois += $montant;
+        }
+        if (count($derniers_paiements) < 5) {
+          $inscrit = $node->get('field_inscrit')->entity;
+          $mois = $node->get('field_mois')->entity;
+          $derniers_paiements[] = [
+            'id' => (int) $node->id(),
+            'eleve' => $inscrit ? $inscrit->label() : '—',
+            'mois' => $mois ? $mois->label() : '—',
+            'montant' => $montant,
+            'date' => date('Y-m-d', $node->getCreatedTime()),
+            'url' => '/app/suivi-ecolages/' . $node->id(),
+            'source' => 'live',
+          ];
+        }
+      }
+
+      $inscription_ids = \Drupal::entityQuery('node')
+        ->condition('type', 'inscription')
+        ->condition('field_annee_scolaire', $annee_scolaire)
+        ->accessCheck(FALSE)
+        ->execute();
+      foreach (Node::loadMultiple(array_values($inscription_ids)) as $node) {
+        $montant = (int) ($this->getInscriptionMontantValue($node) ?? 0);
+        $inscription_total += $montant;
+        $collecte_annee += $montant;
+      }
+    }
+
+    $objectif_mois = max($collecte_mois, $total_inscrits * 25000);
+    $attendu_annee = max($collecte_annee, $total_inscrits * 12 * 25000);
+
+    $par_categorie = [
+      ['categorie' => 'Écolage', 'montant' => $ecolage_total, 'source' => 'live'],
+      ['categorie' => 'Inscription', 'montant' => $inscription_total, 'source' => 'live'],
+      ['categorie' => 'Cantine', 'montant' => 0, 'source' => 'static'],
+      ['categorie' => 'Transport', 'montant' => 0, 'source' => 'static'],
+      ['categorie' => 'Uniforme', 'montant' => 0, 'source' => 'static'],
+    ];
+
+    return [
+      'encaisse_mois' => $collecte_mois,
+      'objectif_mois' => $objectif_mois,
+      'objectif_mois_source' => $collecte_mois > 0 ? 'live' : 'static',
+      'collecte_annee' => $collecte_annee,
+      'attendu_annee' => $attendu_annee,
+      'par_categorie' => $par_categorie,
+      'derniers_paiements' => $derniers_paiements,
+    ];
+  }
+
+  /**
+   * Recent activity feed from latest nodes.
+   */
+  protected function buildDashboardActivity(): array {
+    $items = [];
+    $types = [
+      'etudiant' => ['label' => 'Élève ajouté', 'url_prefix' => '/app/archives-eleves/'],
+      'inscription' => ['label' => 'Inscription', 'url_prefix' => '/app/eleves-inscrits/'],
+      'ecolage' => ['label' => 'Paiement écolage', 'url_prefix' => '/app/suivi-ecolages/'],
+    ];
+
+    foreach ($types as $bundle => $meta) {
+      $ids = \Drupal::entityQuery('node')
+        ->condition('type', $bundle)
+        ->accessCheck(FALSE)
+        ->sort('created', 'DESC')
+        ->range(0, 4)
+        ->execute();
+      foreach (Node::loadMultiple(array_values($ids)) as $node) {
+        $items[] = [
+          'type' => $bundle,
+          'label' => $meta['label'],
+          'title' => $node->label(),
+          'date' => date('Y-m-d H:i', $node->getCreatedTime()),
+          'timestamp' => $node->getCreatedTime(),
+          'url' => $meta['url_prefix'] . $node->id(),
+          'source' => 'live',
+        ];
+      }
+    }
+
+    usort($items, fn($a, $b) => $b['timestamp'] <=> $a['timestamp']);
+    return array_slice(array_map(function ($item) {
+      unset($item['timestamp']);
+      return $item;
+    }, $items), 0, 10);
+  }
+
+  /**
+   * Static alert samples for modules not yet in the system.
+   */
+  protected function getDashboardStaticAlerts(): array {
+    return [
+      [
+        'type' => 'absence',
+        'label' => 'Absence non justifiée',
+        'nom' => 'Rakoto Jean',
+        'classe' => '3ème A',
+        'detail' => 'Absent le ' . date('d/m/Y', strtotime('-1 day')),
+        'url' => '/app/archives-eleves',
+        'source' => 'static',
+      ],
+      [
+        'type' => 'echeance',
+        'label' => 'Échéance proche',
+        'nom' => 'Conseil de classe',
+        'classe' => 'Tous niveaux',
+        'detail' => 'Dans 5 jours — ' . date('d/m/Y', strtotime('+5 days')),
+        'url' => '/app/dashboard',
+        'source' => 'static',
+      ],
+    ];
+  }
+
+  /**
+   * Whether a student has no inscription before the given school year.
+   */
+  protected function isNewStudentForYear(int $eleve_nid, string $current_year, array $school_years): bool {
+    $index = array_search($current_year, $school_years, TRUE);
+    $previous_years = $index !== FALSE ? array_slice($school_years, $index + 1) : [];
+    if (empty($previous_years)) {
+      return TRUE;
+    }
+    $prior = \Drupal::entityQuery('node')
+      ->condition('type', 'inscription')
+      ->condition('field_eleve', $eleve_nid)
+      ->condition('field_annee_scolaire', $previous_years, 'IN')
+      ->accessCheck(FALSE)
+      ->count()
+      ->execute();
+    return $prior === 0;
   }
 
   /**
@@ -348,21 +737,54 @@ class HenitsoaController extends ControllerBase {
   }
 
   /**
+   * Returns reference data for the inscription creation form.
+   */
+  public function getInscriptionFormOptions() {
+    $droits = [];
+    $droit_field = $this->getInscriptionDroitFieldName();
+    if ($droit_field) {
+      foreach ($this->getAllowedValues('inscription', $droit_field) as $value => $label) {
+        $droits[] = ['value' => (string) $value, 'label' => $label];
+      }
+    }
+
+    return new JsonResponse([
+      'status' => 'success',
+      'annee_scolaire' => $this->getCurrentSchoolYear(),
+      'annees_scolaires' => $this->getSchoolYearOptions(),
+      'droits_inscription' => $droits,
+    ]);
+  }
+
+  /**
    * Creates a new "inscription" node.
    *
    * Expects a JSON body: {"eleve_nid": N, "classe_tid": N,
-   * "annee_scolaire": "2025 -2026"}. Rejects duplicates (same student +
-   * school year), mirroring _unique_inscript_validate() in
-   * mz_henitsoa.module.
+   * "annee_scolaire": "2025 -2026", "droit_inscription": "1",
+   * "date_de_payement": "YYYY-MM-DD", "montant": 30000}.
+   * Payment date is saved to field_date_payment, amount to field_montant.
+   * Rejects duplicates (same student + school year).
    */
   public function createInscription(Request $request) {
     $data = json_decode($request->getContent(), TRUE) ?: [];
     $eleve_nid = (int) ($data['eleve_nid'] ?? 0);
     $classe_tid = (int) ($data['classe_tid'] ?? 0);
     $annee_scolaire = trim((string) ($data['annee_scolaire'] ?? ''));
+    $droit_inscription = trim((string) ($data['droit_inscription'] ?? ''));
+    $date_de_payement = trim((string) ($data['date_de_payement'] ?? $data['date_payment'] ?? ''));
+    $montant = (int) ($data['montant'] ?? -1);
 
     if (!$eleve_nid || !$classe_tid || $annee_scolaire === '') {
       return new JsonResponse(['status' => 'error', 'message' => 'Élève, classe et année scolaire sont requis.'], 422);
+    }
+    if ($droit_inscription === '') {
+      return new JsonResponse(['status' => 'error', 'message' => "Le droit d'inscription est requis."], 422);
+    }
+    if ($date_de_payement === '') {
+      return new JsonResponse(['status' => 'error', 'message' => 'La date de paiement est requise.'], 422);
+    }
+    if ($montant < 0) {
+      return new JsonResponse(['status' => 'error', 'message' => 'Le montant est requis.'], 422);
     }
 
     $eleve = Node::load($eleve_nid);
@@ -382,26 +804,33 @@ class HenitsoaController extends ControllerBase {
       ], 409);
     }
 
-    $node = Node::create([
+    $values = [
       'type' => 'inscription',
       'field_eleve' => ['target_id' => $eleve_nid],
       'field_classe' => ['target_id' => $classe_tid],
       'field_annee_scolaire' => $annee_scolaire,
       'status' => 1,
-    ]);
+    ];
+    $droit_field = $this->getInscriptionDroitFieldName();
+    if ($droit_field) {
+      $values[$droit_field] = $droit_inscription;
+    }
+    $payment_field = $this->getInscriptionPaymentDateFieldName();
+    if ($payment_field) {
+      $values[$payment_field] = $date_de_payement;
+    }
+    $montant_field = $this->getInscriptionMontantFieldName();
+    if ($montant_field) {
+      $values[$montant_field] = $montant;
+    }
+
+    $node = Node::create($values);
     $node->save();
 
     $node = Node::load($node->id());
     return new JsonResponse([
       'status' => 'success',
-      'item' => [
-        'id' => (int) $node->id(),
-        'matricule' => $node->label(),
-        'annee_scolaire' => $node->get('field_annee_scolaire')->value,
-        'classe' => $classe->label(),
-        'eleve_nid' => $eleve_nid,
-        'photo_url' => $this->getStudentPhotoUrl($eleve),
-      ],
+      'item' => $this->formatInscriptionListItem($node, $classe->label(), $eleve),
     ], 201);
   }
 
@@ -558,6 +987,36 @@ class HenitsoaController extends ControllerBase {
   }
 
   /**
+   * Suivi des écolages : liste filtrée par inscription avec soldes.
+   */
+  public function getEcolageSuivi(Request $request) {
+    $service = \Drupal::service('mz_henitsoa.ecolage_suivi');
+    return new JsonResponse($service->getSuivi($request));
+  }
+
+  /**
+   * Export CSV du suivi écolages.
+   */
+  public function exportEcolageSuivi(Request $request) {
+    $service = \Drupal::service('mz_henitsoa.ecolage_suivi');
+    $csv = $service->exportCsv($request);
+    return new Response($csv, 200, [
+      'Content-Type' => 'text/csv; charset=utf-8',
+      'Content-Disposition' => 'attachment; filename="suivi-ecolages.csv"',
+    ]);
+  }
+
+  /**
+   * Historique des paiements d'une inscription.
+   */
+  public function getEcolageSuiviHistory($inscription_id) {
+    $service = \Drupal::service('mz_henitsoa.ecolage_suivi');
+    $payload = $service->getInscriptionHistory((int) $inscription_id);
+    $code = ($payload['status'] ?? '') === 'error' ? 404 : 200;
+    return new JsonResponse($payload, $code);
+  }
+
+  /**
    * Creates a new "ecolage" (tuition payment) node.
    *
    * Expects a JSON body: {"inscrit_nid": N, "mois_tid": N,
@@ -596,6 +1055,15 @@ class HenitsoaController extends ControllerBase {
       ], 409);
     }
 
+    $mode_paiement = trim((string) ($data['mode_paiement'] ?? ''));
+    $date_paiement = trim((string) ($data['date_paiement'] ?? date('Y-m-d')));
+    $suivi_service = \Drupal::service('mz_henitsoa.ecolage_suivi');
+    $receipt = $suivi_service->generateReceiptNumber();
+    $description_parts = ["Reçu: $receipt", "Date: $date_paiement"];
+    if ($mode_paiement !== '') {
+      $description_parts[] = 'Mode: ' . $mode_paiement;
+    }
+
     $node = Node::create([
       'type' => 'ecolage',
       'title' => date('Ymd') . '_' . uniqid(),
@@ -604,6 +1072,7 @@ class HenitsoaController extends ControllerBase {
       'field_annee_scolaire' => $annee_scolaire,
       'field_montant' => $montant,
       'field_status' => $status,
+      'field_description' => implode(' | ', $description_parts),
       'status' => 1,
     ]);
     $node->save();
@@ -620,6 +1089,9 @@ class HenitsoaController extends ControllerBase {
         'status' => $status,
         'status_label' => $statuses[$status] ?? $status,
         'annee_scolaire' => $annee_scolaire,
+        'receipt_number' => $receipt,
+        'mode_paiement' => $mode_paiement,
+        'date_paiement' => $date_paiement,
       ],
     ], 201);
   }
@@ -720,38 +1192,169 @@ class HenitsoaController extends ControllerBase {
       return new JsonResponse(['status' => 'error', 'message' => 'Inscription introuvable.'], 404);
     }
 
-    $classe = $node->get('field_classe')->entity;
-    $eleve = $node->get('field_eleve')->entity;
-    $droits = $this->getAllowedValues('inscription', 'field_droite');
-    $droits_value = $node->get('field_droite')->value;
-
-    $paid_month_ids = array_map(
-      function ($item) { return (int) $item['target_id']; },
-      $node->get('field_ecolage_status')->getValue()
-    );
-    $ecolage_months = array_map(function ($mois) use ($paid_month_ids) {
-      return $mois + ['paid' => in_array($mois['id'], $paid_month_ids, TRUE)];
-    }, $this->getMoisTerms());
-
     return new JsonResponse([
       'status' => 'success',
-      'item' => [
-        'id' => (int) $node->id(),
-        'matricule' => $node->label(),
-        'annee_scolaire' => $node->get('field_annee_scolaire')->value,
-        'classe' => $classe ? $classe->label() : NULL,
-        'classe_tid' => $classe ? (int) $classe->id() : NULL,
-        'description' => $node->get('field_description')->value,
-        'droits_status' => $droits_value,
-        'droits_status_label' => $droits[$droits_value] ?? NULL,
-        'eleve' => $eleve ? $this->formatEtudiant($eleve) : NULL,
-        'ecolage_months' => $ecolage_months,
-      ],
+      'item' => $this->buildInscriptionDetailItem($node),
     ]);
   }
 
   /**
-   * Full detail of a single archived "etudiant" node.
+   * Updates an existing "inscription" node.
+   *
+   * Expects a JSON body with: classe_tid, annee_scolaire, droit_inscription,
+   * date_de_payement (or date_payment), montant, and optional description.
+   */
+  public function updateInscription($id, Request $request) {
+    $node = Node::load($id);
+    if (!$node || $node->bundle() !== 'inscription') {
+      return new JsonResponse(['status' => 'error', 'message' => 'Inscription introuvable.'], 404);
+    }
+
+    $data = json_decode($request->getContent(), TRUE) ?: [];
+    $classe_tid = (int) ($data['classe_tid'] ?? 0);
+    $annee_scolaire = trim((string) ($data['annee_scolaire'] ?? ''));
+    $droit_inscription = trim((string) ($data['droit_inscription'] ?? ''));
+    $date_de_payement = trim((string) ($data['date_de_payement'] ?? $data['date_payment'] ?? ''));
+    $montant = (int) ($data['montant'] ?? -1);
+    $description = array_key_exists('description', $data) ? trim((string) $data['description']) : NULL;
+
+    if (!$classe_tid || $annee_scolaire === '') {
+      return new JsonResponse(['status' => 'error', 'message' => 'Classe et année scolaire sont requis.'], 422);
+    }
+    if ($droit_inscription === '') {
+      return new JsonResponse(['status' => 'error', 'message' => "Le droit d'inscription est requis."], 422);
+    }
+    if ($date_de_payement === '') {
+      return new JsonResponse(['status' => 'error', 'message' => 'La date de paiement est requise.'], 422);
+    }
+    if ($montant < 0) {
+      return new JsonResponse(['status' => 'error', 'message' => 'Le montant est requis.'], 422);
+    }
+
+    $classe = Term::load($classe_tid);
+    if (!$classe || $classe->bundle() !== 'classe') {
+      return new JsonResponse(['status' => 'error', 'message' => "Classe introuvable."], 422);
+    }
+
+    $eleve_nid = (int) $node->get('field_eleve')->target_id;
+    $duplicate_ids = \Drupal::entityQuery('node')
+      ->condition('type', 'inscription')
+      ->condition('field_eleve', $eleve_nid)
+      ->condition('field_annee_scolaire', $annee_scolaire)
+      ->condition('nid', $node->id(), '<>')
+      ->accessCheck(FALSE)
+      ->execute();
+    if (!empty($duplicate_ids)) {
+      return new JsonResponse([
+        'status' => 'error',
+        'message' => "Cet élève a déjà une inscription pour l'année $annee_scolaire.",
+      ], 409);
+    }
+
+    $node->set('field_classe', ['target_id' => $classe_tid]);
+    $node->set('field_annee_scolaire', $annee_scolaire);
+    $droit_field = $this->getInscriptionDroitFieldName($node);
+    if ($droit_field) {
+      $node->set($droit_field, $droit_inscription);
+    }
+    $payment_field = $this->getInscriptionPaymentDateFieldName($node);
+    if ($payment_field) {
+      $node->set($payment_field, $date_de_payement);
+    }
+    $montant_field = $this->getInscriptionMontantFieldName($node);
+    if ($montant_field) {
+      $node->set($montant_field, $montant);
+    }
+    if ($description !== NULL && $node->hasField('field_description')) {
+      $node->set('field_description', $description === '' ? NULL : $description);
+    }
+
+    $node->save();
+    $node = Node::load($node->id());
+
+    return new JsonResponse([
+      'status' => 'success',
+      'item' => $this->buildInscriptionDetailItem($node),
+    ]);
+  }
+
+  /**
+   * Builds the full inscription detail payload for API responses.
+   */
+  protected function buildInscriptionDetailItem($node) {
+    $classe = $node->get('field_classe')->entity;
+    $eleve = $node->get('field_eleve')->entity;
+    $droit_field = $this->getInscriptionDroitFieldName($node);
+    $droits = $droit_field ? $this->getAllowedValues('inscription', $droit_field) : [];
+    $droits_value = $droit_field ? $node->get($droit_field)->value : NULL;
+    $payment_field = $this->getInscriptionPaymentDateFieldName($node);
+    $date_de_payement = $this->getInscriptionPaymentDateValue($node, $payment_field);
+
+    $ecolage_months = $this->buildEcolageMonthsForInscription($node);
+
+    return [
+      'id' => (int) $node->id(),
+      'matricule' => $node->label(),
+      'annee_scolaire' => $node->get('field_annee_scolaire')->value,
+      'classe' => $classe ? $classe->label() : NULL,
+      'classe_tid' => $classe ? (int) $classe->id() : NULL,
+      'description' => $node->get('field_description')->value,
+      'droits_status' => $droits_value,
+      'droits_status_label' => $droits[$droits_value] ?? NULL,
+      'droit_inscription' => $droits_value,
+      'droit_inscription_label' => $droits[$droits_value] ?? NULL,
+      'date_de_payement' => $date_de_payement,
+      'date_payment' => $date_de_payement,
+      'montant' => $this->getInscriptionMontantValue($node),
+      'eleve_nid' => $eleve ? (int) $eleve->id() : NULL,
+      'eleve' => $eleve ? $this->formatEtudiant($eleve) : NULL,
+      'ecolage_months' => $ecolage_months,
+    ];
+  }
+
+  /**
+   * Builds month-by-month ecolage status for an inscription.
+   */
+  protected function buildEcolageMonthsForInscription($node): array {
+    $paid_month_ids = array_map(
+      function ($item) { return (int) $item['target_id']; },
+      $node->get('field_ecolage_status')->getValue()
+    );
+    $annee_scolaire = $node->get('field_annee_scolaire')->value;
+    $statuses = $this->getEcolageStatusOptions();
+
+    $ecolage_ids = \Drupal::entityQuery('node')
+      ->condition('type', 'ecolage')
+      ->condition('field_inscrit', $node->id())
+      ->condition('field_annee_scolaire', $annee_scolaire)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    $payments_by_mois = [];
+    foreach (Node::loadMultiple(array_values($ecolage_ids)) as $ecolage) {
+      $mois_tid = (int) $ecolage->get('field_mois')->target_id;
+      $status_value = $ecolage->get('field_status')->value;
+      $payments_by_mois[$mois_tid] = [
+        'id' => (int) $ecolage->id(),
+        'montant' => (int) $ecolage->get('field_montant')->value,
+        'status' => $status_value,
+        'status_label' => $statuses[$status_value] ?? $status_value,
+        'date' => date('Y-m-d', $ecolage->getCreatedTime()),
+        'description' => $ecolage->get('field_description')->value,
+        'url' => '/app/suivi-ecolages/' . $ecolage->id(),
+      ];
+    }
+
+    return array_map(function ($mois) use ($paid_month_ids, $payments_by_mois) {
+      return $mois + [
+        'paid' => in_array($mois['id'], $paid_month_ids, TRUE),
+        'payment' => $payments_by_mois[$mois['id']] ?? NULL,
+      ];
+    }, $this->getMoisTerms());
+  }
+
+  /**
+   * Full detail of an archived "etudiant" node.
    */
   public function getArchiveDetail($id) {
     $node = Node::load($id);
@@ -1103,6 +1706,122 @@ class HenitsoaController extends ControllerBase {
     ]);
     $media->save();
     $node->set($photo_field, ['target_id' => $media->id()]);
+  }
+
+  /**
+   * Formats an inscription node for list/create API responses.
+   */
+  protected function formatInscriptionListItem($node, $classe_label, $eleve) {
+    $droit_field = $this->getInscriptionDroitFieldName($node);
+    $droits = $droit_field ? $this->getAllowedValues('inscription', $droit_field) : [];
+    $droits_value = $droit_field ? $node->get($droit_field)->value : NULL;
+    $payment_field = $this->getInscriptionPaymentDateFieldName($node);
+    $date_de_payement = $this->getInscriptionPaymentDateValue($node, $payment_field);
+
+    return [
+      'id' => (int) $node->id(),
+      'matricule' => $node->label(),
+      'annee_scolaire' => $node->get('field_annee_scolaire')->value,
+      'classe' => $classe_label,
+      'eleve_nid' => $eleve ? (int) $eleve->id() : NULL,
+      'photo_url' => $eleve ? $this->getStudentPhotoUrl($eleve) : NULL,
+      'droit_inscription' => $droits_value,
+      'droit_inscription_label' => $droits[$droits_value] ?? NULL,
+      'date_de_payement' => $date_de_payement,
+      'montant' => $this->getInscriptionMontantValue($node),
+    ];
+  }
+
+  /**
+   * Returns the inscription montant field value.
+   */
+  private function getInscriptionMontantValue($node): ?int {
+    $montant_field = $this->getInscriptionMontantFieldName($node);
+    if (!$montant_field || $node->get($montant_field)->isEmpty()) {
+      return NULL;
+    }
+    return (int) $node->get($montant_field)->value;
+  }
+
+  /**
+   * Returns the inscription payment date value (Y-m-d).
+   */
+  private function getInscriptionPaymentDateValue($node, ?string $payment_field): ?string {
+    if (!$payment_field || $node->get($payment_field)->isEmpty()) {
+      return NULL;
+    }
+    $item = $node->get($payment_field)->first();
+    if ($item && $item->date) {
+      return $item->date->format('Y-m-d');
+    }
+    $value = $node->get($payment_field)->value;
+    return $value ? substr((string) $value, 0, 10) : NULL;
+  }
+
+  /**
+   * Returns the inscription montant field name.
+   */
+  private function getInscriptionMontantFieldName($entity = NULL): ?string {
+    $candidates = ['field_montant'];
+    if ($entity) {
+      foreach ($candidates as $field_name) {
+        if ($entity->hasField($field_name)) {
+          return $field_name;
+        }
+      }
+      return NULL;
+    }
+    $definitions = \Drupal::service('entity_field.manager')->getFieldDefinitions('node', 'inscription');
+    foreach ($candidates as $field_name) {
+      if (isset($definitions[$field_name])) {
+        return $field_name;
+      }
+    }
+    return NULL;
+  }
+
+  /**
+   * Returns the inscription droit field name.
+   */
+  private function getInscriptionDroitFieldName($entity = NULL): ?string {
+    $candidates = ['field_droit_inscription', 'field_droite'];
+    if ($entity) {
+      foreach ($candidates as $field_name) {
+        if ($entity->hasField($field_name)) {
+          return $field_name;
+        }
+      }
+      return NULL;
+    }
+    $definitions = \Drupal::service('entity_field.manager')->getFieldDefinitions('node', 'inscription');
+    foreach ($candidates as $field_name) {
+      if (isset($definitions[$field_name])) {
+        return $field_name;
+      }
+    }
+    return NULL;
+  }
+
+  /**
+   * Returns the inscription payment date field name.
+   */
+  private function getInscriptionPaymentDateFieldName($entity = NULL): ?string {
+    $candidates = ['field_date_payment', 'field_date_de_payement', 'field_date_de_paiement'];
+    if ($entity) {
+      foreach ($candidates as $field_name) {
+        if ($entity->hasField($field_name)) {
+          return $field_name;
+        }
+      }
+      return NULL;
+    }
+    $definitions = \Drupal::service('entity_field.manager')->getFieldDefinitions('node', 'inscription');
+    foreach ($candidates as $field_name) {
+      if (isset($definitions[$field_name])) {
+        return $field_name;
+      }
+    }
+    return NULL;
   }
 
   /**
