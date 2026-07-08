@@ -16,6 +16,13 @@ class EcolageSuiviService {
   const RETARD_MOIS_SEUIL = 2;
 
   /**
+   * Billing months for the school year (September to June).
+   */
+  const ECOLAGE_BILLING_MONTHS = [9, 10, 11, 12, 1, 2, 3, 4, 5, 6];
+
+  const ECOLAGE_VACATION_MONTHS = [7, 8];
+
+  /**
    * Builds the full suivi payload for the Vue page.
    */
   public function getSuivi(Request $request, bool $all = FALSE): array {
@@ -29,7 +36,7 @@ class EcolageSuiviService {
     $limit = min(max((int) $request->query->get('limit', 25), 1), 100);
 
     $annee_scolaire = $this->getCurrentSchoolYear();
-    $mois_terms = $this->getMoisTerms();
+    $mois_terms = $this->getEcolageMoisTerms();
     $classes = $this->getClassesList();
 
     $query = \Drupal::entityQuery('node')
@@ -56,7 +63,7 @@ class EcolageSuiviService {
     }
 
     $summary = $this->buildSummary($rows);
-    $alerts = $this->buildAlerts($rows, $mois_terms);
+    $alerts = $this->buildAlerts($rows, $mois_terms, $annee_scolaire);
 
     $this->sortRows($rows, $sort, $direction);
     $total = count($rows);
@@ -104,7 +111,7 @@ class EcolageSuiviService {
     }
 
     $annee_scolaire = $inscription->get('field_annee_scolaire')->value;
-    $mois_terms = $this->getMoisTerms();
+    $mois_terms = $this->getEcolageMoisTerms();
     $suivi = $this->computeInscriptionSuivi($inscription, $mois_terms, $annee_scolaire, 0);
 
     $ecolage_ids = \Drupal::entityQuery('node')
@@ -174,7 +181,7 @@ class EcolageSuiviService {
     $period_months = $this->getPeriodMonths($mois_terms, $filter_mois_tid);
     $period_month_ids = array_column($period_months, 'id');
     $paid_in_period = count(array_intersect($paid_month_ids, $period_month_ids));
-    $expected_months = $filter_mois_tid > 0 ? 1 : $this->getElapsedSchoolMonths(count($mois_terms));
+    $expected_months = $filter_mois_tid > 0 ? 1 : $this->getElapsedSchoolMonths(count($mois_terms), $annee_scolaire);
 
     $monthly_fee = $this->resolveMonthlyFee($inscription, $annee_scolaire);
     $montant_du = ($filter_mois_tid > 0 ? 1 : min($expected_months, count($mois_terms))) * $monthly_fee;
@@ -288,14 +295,131 @@ class EcolageSuiviService {
     return $mois_terms;
   }
 
-  protected function getElapsedSchoolMonths(int $total_months): int {
-    $school_calendar = [9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8];
-    $now = (int) date('n');
-    $index = array_search($now, $school_calendar, TRUE);
-    if ($index === FALSE) {
-      return $total_months;
+  protected function getElapsedSchoolMonths(int $total_months, ?string $annee_scolaire = NULL): int {
+    $billing_calendar = $this->getSchoolCalendarMonths();
+    $max = min($total_months, count($billing_calendar));
+
+    if (!$annee_scolaire) {
+      $now = (int) date('n');
+      if (in_array($now, self::ECOLAGE_VACATION_MONTHS, TRUE)) {
+        return $max;
+      }
+      $index = array_search($now, $billing_calendar, TRUE);
+      if ($index === FALSE) {
+        return $max;
+      }
+      return min($index + 1, $max);
     }
-    return min($index + 1, $total_months);
+
+    $position = $this->getSchoolYearPosition($annee_scolaire);
+    if ($position === 'not_started') {
+      return 0;
+    }
+    if ($position === 'vacation' || $position === 'ended') {
+      return $max;
+    }
+
+    $index = array_search((int) date('n'), $billing_calendar, TRUE);
+    if ($index === FALSE) {
+      return 0;
+    }
+    return min($index + 1, $max);
+  }
+
+  /**
+   * Returns the previous billing month within the given school year.
+   *
+   * Examples for 2026-2027: September → none; October → SEPTEMBRE.
+   * July after 2025-2026 ends → JUIN (last month of that year).
+   */
+  public function getPreviousSchoolMonth(array $mois_terms, ?string $annee_scolaire = NULL): ?array {
+    $billing_terms = $this->filterEcolageMoisTerms($mois_terms);
+    if (empty($billing_terms) || !$annee_scolaire) {
+      return NULL;
+    }
+
+    $billing_calendar = $this->getSchoolCalendarMonths();
+    $elapsed = $this->getElapsedSchoolMonths(count($billing_terms), $annee_scolaire);
+    if ($elapsed < 2) {
+      return NULL;
+    }
+
+    $position = $this->getSchoolYearPosition($annee_scolaire);
+    if ($position === 'vacation' || $position === 'ended') {
+      return $this->findMoisTermByCalendarMonth($billing_terms, 6);
+    }
+
+    $prev_calendar_month = $billing_calendar[$elapsed - 2];
+    return $this->findMoisTermByCalendarMonth($billing_terms, $prev_calendar_month);
+  }
+
+  /**
+   * Checks whether a month is marked paid on the inscription.
+   */
+  public function isInscriptionMonthPaid(Node $inscription, int $mois_tid): bool {
+    if ($mois_tid <= 0) {
+      return FALSE;
+    }
+    $paid_month_ids = array_map(
+      fn($item) => (int) $item['target_id'],
+      $inscription->get('field_ecolage_status')->getValue()
+    );
+    return in_array($mois_tid, $paid_month_ids, TRUE);
+  }
+
+  protected function getSchoolCalendarMonths(): array {
+    return self::ECOLAGE_BILLING_MONTHS;
+  }
+
+  /**
+   * Keeps only billing months (September to June).
+   */
+  public function filterEcolageMoisTerms(array $mois_terms): array {
+    $billing_labels = array_map(
+      fn(int $month) => $this->getCalendarMonthLabels()[$month],
+      $this->getSchoolCalendarMonths()
+    );
+    return array_values(array_filter(
+      $mois_terms,
+      fn(array $mois) => in_array($mois['nom'], $billing_labels, TRUE)
+    ));
+  }
+
+  /**
+   * Returns billing months for écolage (September to June).
+   */
+  public function getEcolageMoisTerms(): array {
+    return $this->filterEcolageMoisTerms($this->loadAllMoisTerms());
+  }
+
+  protected function findMoisTermByCalendarMonth(array $mois_terms, int $calendar_month): ?array {
+    $label = $this->getCalendarMonthLabels()[$calendar_month] ?? NULL;
+    if (!$label) {
+      return NULL;
+    }
+    foreach ($mois_terms as $mois) {
+      if ($mois['nom'] === $label) {
+        return $mois;
+      }
+    }
+    return NULL;
+  }
+
+  protected function getCalendarMonthLabels(): array {
+    return [
+      9 => 'SEPTEMBRE',
+      10 => 'OCTOBRE',
+      11 => 'NOVEMBRE',
+      12 => 'DECEMBRE',
+      1 => 'JANVIER',
+      2 => 'FEVRIER',
+      3 => 'MARS',
+      4 => 'AVRIL',
+      5 => 'MAI',
+      6 => 'JUIN',
+      7 => 'JUILLET',
+      8 => 'AOUT',
+    ];
   }
 
   protected function buildSummary(array $rows): array {
@@ -314,10 +438,42 @@ class EcolageSuiviService {
     ];
   }
 
-  protected function buildAlerts(array $rows, array $mois_terms): array {
+  protected function buildAlerts(array $rows, array $mois_terms, ?string $annee_scolaire = NULL): array {
     $alerts = [];
-    $seuil = self::RETARD_MOIS_SEUIL;
     $seen = [];
+    $previous_month = $this->getPreviousSchoolMonth($mois_terms, $annee_scolaire);
+    $seuil = self::RETARD_MOIS_SEUIL;
+
+    if ($previous_month) {
+      foreach ($rows as $row) {
+        $key = $row['inscription_id'];
+        if (isset($seen[$key])) {
+          continue;
+        }
+        $is_paid = FALSE;
+        foreach ($row['mois_status'] as $mois) {
+          if ((int) $mois['id'] === (int) $previous_month['id'] && !empty($mois['paid'])) {
+            $is_paid = TRUE;
+            break;
+          }
+        }
+        if (!$is_paid) {
+          $alerts[] = [
+            'type' => 'retard_paiement',
+            'label' => 'Retard écolage',
+            'nom' => $row['eleve'],
+            'classe' => $row['classe'],
+            'detail' => $previous_month['nom'] . ' non payé',
+            'url' => '/app/eleves-inscrits/' . $row['inscription_id'],
+            'source' => 'live',
+          ];
+          $seen[$key] = TRUE;
+        }
+        if (count($alerts) >= 8) {
+          break;
+        }
+      }
+    }
 
     foreach ($rows as $row) {
       $key = $row['inscription_id'];
@@ -371,18 +527,116 @@ class EcolageSuiviService {
 
   protected function getCurrentSchoolYear(): ?string {
     $years = $this->getSchoolYearOptions();
+    if (empty($years)) {
+      return NULL;
+    }
+
+    $configured = trim((string) \Drupal::service('carnet_henitsoa')->getConfiguredSchoolYear());
+    if ($configured !== '' && in_array($configured, $years, TRUE)) {
+      return $configured;
+    }
+
+    $current_start_year = $this->getCurrentSchoolYearStart();
+    $preferred_year = $this->findSchoolYearByStart($years, $current_start_year);
+    if ($preferred_year !== NULL && $this->schoolYearHasInscriptions($preferred_year)) {
+      return $preferred_year;
+    }
+
     foreach ($years as $year) {
-      $count = \Drupal::entityQuery('node')
-        ->condition('type', 'inscription')
-        ->condition('field_annee_scolaire', $year)
-        ->accessCheck(FALSE)
-        ->count()
-        ->execute();
-      if ($count > 0) {
+      $start_year = $this->parseSchoolYearStart($year);
+      if ($start_year !== NULL && $start_year > $current_start_year) {
+        continue;
+      }
+      if ($this->schoolYearHasInscriptions($year)) {
         return $year;
       }
     }
-    return $years[0] ?? NULL;
+
+    foreach ($years as $year) {
+      if ($this->schoolYearHasInscriptions($year)) {
+        return $year;
+      }
+    }
+
+    return $preferred_year ?? $years[0];
+  }
+
+  protected function getCurrentSchoolYearStart(): int {
+    $month = (int) date('n');
+    $year = (int) date('Y');
+    return $month >= 9 ? $year : $year - 1;
+  }
+
+  protected function findSchoolYearByStart(array $years, int $start_year): ?string {
+    foreach ($years as $year) {
+      if ($this->parseSchoolYearStart($year) === $start_year) {
+        return $year;
+      }
+    }
+    return NULL;
+  }
+
+  protected function parseSchoolYearStart(string $year): ?int {
+    if (preg_match('/(\d{4})\s*-\s*(\d{4})/', $year, $matches)) {
+      return (int) $matches[1];
+    }
+    return NULL;
+  }
+
+  protected function parseSchoolYearEnd(string $year): ?int {
+    if (preg_match('/(\d{4})\s*-\s*(\d{4})/', $year, $matches)) {
+      return (int) $matches[2];
+    }
+    return NULL;
+  }
+
+  /**
+   * Position of today relative to a school year label.
+   *
+   * @return string
+   *   not_started | active | vacation | ended
+   */
+  protected function getSchoolYearPosition(?string $annee_scolaire): string {
+    if (!$annee_scolaire) {
+      return 'active';
+    }
+
+    $start_year = $this->parseSchoolYearStart($annee_scolaire);
+    $end_year = $this->parseSchoolYearEnd($annee_scolaire);
+    if ($start_year === NULL || $end_year === NULL) {
+      return 'active';
+    }
+
+    $year = (int) date('Y');
+    $month = (int) date('n');
+
+    if ($year < $start_year || ($year === $start_year && $month < 9)) {
+      return 'not_started';
+    }
+
+    if ($year === $end_year && in_array($month, self::ECOLAGE_VACATION_MONTHS, TRUE)) {
+      return 'vacation';
+    }
+
+    if ($year > $end_year || ($year === $end_year && $month >= 9)) {
+      return 'ended';
+    }
+
+    return 'active';
+  }
+
+  protected function isFutureSchoolYear(?string $annee_scolaire): bool {
+    return $this->getSchoolYearPosition($annee_scolaire) === 'not_started';
+  }
+
+  protected function schoolYearHasInscriptions(string $year): bool {
+    $count = \Drupal::entityQuery('node')
+      ->condition('type', 'inscription')
+      ->condition('field_annee_scolaire', $year)
+      ->accessCheck(FALSE)
+      ->count()
+      ->execute();
+    return $count > 0;
   }
 
   protected function getSchoolYearOptions(): array {
@@ -394,6 +648,10 @@ class EcolageSuiviService {
   }
 
   protected function getMoisTerms(): array {
+    return $this->getEcolageMoisTerms();
+  }
+
+  protected function loadAllMoisTerms(): array {
     $mois_ids = \Drupal::entityQuery('taxonomy_term')
       ->condition('vid', 'mois')
       ->accessCheck(FALSE)

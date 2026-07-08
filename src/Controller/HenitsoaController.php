@@ -209,7 +209,8 @@ class HenitsoaController extends ControllerBase {
    */
   public function getDashboardStats() {
     $school_years = $this->getSchoolYearOptions();
-    $annee_scolaire = $this->getCurrentSchoolYear() ?: ($school_years[0] ?? NULL);
+    $default_year = $this->getCurrentSchoolYear() ?: ($school_years[0] ?? NULL);
+    $annee_scolaire = $default_year;
     $cid = 'mz_henitsoa:dashboard:' . md5((string) $annee_scolaire);
     $cache = \Drupal::cache()->get($cid);
     if ($cache) {
@@ -254,8 +255,9 @@ class HenitsoaController extends ControllerBase {
     $nouvelles_inscriptions_mois = 0;
     $retard_paiement = [];
     $dossiers_incomplets = [];
-    $mois_terms = $this->getMoisTerms();
-    $mois_count = count($mois_terms);
+    $mois_terms = $this->loadAllMoisTerms();
+    $ecolage_suivi = \Drupal::service('mz_henitsoa.ecolage_suivi');
+    $previous_school_month = $ecolage_suivi->getPreviousSchoolMonth($mois_terms, $annee_scolaire);
     $month_start = strtotime(date('Y-m-01 00:00:00'));
 
     foreach (Node::loadMultiple(array_values($inscription_ids)) as $node) {
@@ -282,8 +284,11 @@ class HenitsoaController extends ControllerBase {
         ];
       }
 
-      $paid_months = count($node->get('field_ecolage_status')->getValue());
-      if ($mois_count > 0 && $paid_months < min($mois_count, 3) && count($retard_paiement) < 5) {
+      if (
+        $previous_school_month
+        && !$ecolage_suivi->isInscriptionMonthPaid($node, $previous_school_month['id'])
+        && count($retard_paiement) < 5
+      ) {
         $retard_paiement[] = [
           'type' => 'retard_paiement',
           'label' => 'Retard écolage',
@@ -291,7 +296,7 @@ class HenitsoaController extends ControllerBase {
           'inscription_id' => (int) $node->id(),
           'nom' => $node->label(),
           'classe' => $classe_label,
-          'detail' => "$paid_months / $mois_count mois payés",
+          'detail' => $previous_school_month['nom'] . ' non payé',
           'url' => '/app/eleves-inscrits/' . $node->id(),
           'source' => 'live',
         ];
@@ -395,6 +400,7 @@ class HenitsoaController extends ControllerBase {
     return [
       'status' => 'success',
       'annee_scolaire' => $annee_scolaire,
+      'annees_scolaires' => $school_years,
       'annee_precedente' => $annee_precedente,
       'key_stats' => [
         'total_inscrits' => count($inscription_ids),
@@ -889,18 +895,74 @@ class HenitsoaController extends ControllerBase {
    *   E.g. "2025 -2026", or NULL if no inscription exists at all.
    */
   protected function getCurrentSchoolYear() {
-    foreach ($this->getSchoolYearOptions() as $year) {
-      $count = \Drupal::entityQuery('node')
-        ->condition('type', 'inscription')
-        ->condition('field_annee_scolaire', $year)
-        ->accessCheck(FALSE)
-        ->count()
-        ->execute();
-      if ($count > 0) {
+    $years = $this->getSchoolYearOptions();
+    if (empty($years)) {
+      return NULL;
+    }
+
+    $configured = trim((string) \Drupal::service('carnet_henitsoa')->getConfiguredSchoolYear());
+    if ($configured !== '' && in_array($configured, $years, TRUE)) {
+      return $configured;
+    }
+
+    $current_start_year = $this->getCurrentSchoolYearStart();
+    $preferred_year = $this->findSchoolYearByStart($years, $current_start_year);
+    if ($preferred_year !== NULL && $this->schoolYearHasInscriptions($preferred_year)) {
+      return $preferred_year;
+    }
+
+    foreach ($years as $year) {
+      $start_year = $this->parseSchoolYearStart($year);
+      if ($start_year !== NULL && $start_year > $current_start_year) {
+        continue;
+      }
+      if ($this->schoolYearHasInscriptions($year)) {
+        return $year;
+      }
+    }
+
+    foreach ($years as $year) {
+      if ($this->schoolYearHasInscriptions($year)) {
+        return $year;
+      }
+    }
+
+    return $preferred_year ?? $years[0];
+  }
+
+  /**
+   * Current school year starts in September.
+   */
+  private function getCurrentSchoolYearStart(): int {
+    $month = (int) date('n');
+    $year = (int) date('Y');
+    return $month >= 9 ? $year : $year - 1;
+  }
+
+  private function findSchoolYearByStart(array $years, int $start_year): ?string {
+    foreach ($years as $year) {
+      if ($this->parseSchoolYearStart($year) === $start_year) {
         return $year;
       }
     }
     return NULL;
+  }
+
+  private function parseSchoolYearStart(string $year): ?int {
+    if (preg_match('/(\d{4})\s*-\s*(\d{4})/', $year, $matches)) {
+      return (int) $matches[1];
+    }
+    return NULL;
+  }
+
+  private function schoolYearHasInscriptions(string $year): bool {
+    $count = \Drupal::entityQuery('node')
+      ->condition('type', 'inscription')
+      ->condition('field_annee_scolaire', $year)
+      ->accessCheck(FALSE)
+      ->count()
+      ->execute();
+    return $count > 0;
   }
 
   /**
@@ -1109,13 +1171,22 @@ class HenitsoaController extends ControllerBase {
   }
 
   /**
-   * Returns the 12 "mois" taxonomy terms, ordered by the Malagasy school
-   * year (September to August) since they have no configured weight.
+   * Returns billing months (September to June) for écolage.
    *
    * @return array
    *   Array of ['id' => int, 'nom' => string].
    */
   protected function getMoisTerms() {
+    return \Drupal::service('mz_henitsoa.ecolage_suivi')->getEcolageMoisTerms();
+  }
+
+  /**
+   * Loads all 12 month taxonomy terms (including vacation months).
+   *
+   * @return array
+   *   Array of ['id' => int, 'nom' => string].
+   */
+  protected function loadAllMoisTerms() {
     $mois_ids = \Drupal::entityQuery('taxonomy_term')
       ->condition('vid', 'mois')
       ->accessCheck(FALSE)
@@ -1882,21 +1953,35 @@ class HenitsoaController extends ControllerBase {
    */
   public function updateCarnetConfig(Request $request) {
     $data = json_decode($request->getContent(), TRUE) ?: [];
-    if (!array_key_exists('template_path', $data)) {
-      return new JsonResponse(['status' => 'error', 'message' => 'Le chemin du template est requis.'], 422);
+    if (!array_key_exists('template_path', $data) && !array_key_exists('selected_school_year', $data)) {
+      return new JsonResponse(['status' => 'error', 'message' => 'Aucune donnée de configuration reçue.'], 422);
     }
 
-    $template_path = trim((string) $data['template_path']);
+    $template_path = trim((string) ($data['template_path'] ?? ''));
+    $selected_school_year = trim((string) ($data['selected_school_year'] ?? ''));
     $service = \Drupal::service('carnet_henitsoa');
+    $school_years = $service->getSchoolYearOptions();
 
-    if ($template_path !== '' && !$service->resolveTemplatePath($template_path)) {
+    if ($selected_school_year !== '' && !in_array($selected_school_year, $school_years, TRUE)) {
+      return new JsonResponse([
+        'status' => 'error',
+        'message' => "Année scolaire invalide.",
+      ], 422);
+    }
+
+    if (array_key_exists('template_path', $data) && $template_path !== '' && !$service->resolveTemplatePath($template_path)) {
       return new JsonResponse([
         'status' => 'error',
         'message' => 'Fichier introuvable. Utilisez un chemin Drupal (public://...) ou un chemin absolu vers un fichier .docx.',
       ], 422);
     }
 
-    $service->setConfiguredTemplatePath($template_path);
+    if (array_key_exists('template_path', $data)) {
+      $service->setConfiguredTemplatePath($template_path);
+    }
+    if (array_key_exists('selected_school_year', $data)) {
+      $service->setConfiguredSchoolYear($selected_school_year);
+    }
 
     return new JsonResponse([
       'status' => 'success',

@@ -87,6 +87,8 @@ class CarnetHenitsoa
     $default_uri = $this->getDefaultMediaTemplateUri();
     $active_path = $configured_path !== '' ? $configured_path : $default_uri;
     $resolved_path = $active_path !== '' ? $this->resolveTemplatePath($active_path) : FALSE;
+    $selected_school_year = $this->getConfiguredSchoolYear();
+    $school_year_options = $this->getSchoolYearOptions();
 
     return [
       'template_path' => $configured_path,
@@ -95,7 +97,38 @@ class CarnetHenitsoa
       'resolved_path' => $resolved_path ?: NULL,
       'exists' => (bool) $resolved_path,
       'uses_default' => $configured_path === '',
+      'selected_school_year' => $selected_school_year,
+      'school_year_options' => $school_year_options,
     ];
+  }
+
+  /**
+   * Returns the globally selected school year.
+   */
+  public function getConfiguredSchoolYear() {
+    return trim((string) \Drupal::config('mz_henitsoa.settings')->get('selected_school_year'));
+  }
+
+  /**
+   * Saves the globally selected school year.
+   */
+  public function setConfiguredSchoolYear($school_year) {
+    \Drupal::configFactory()->getEditable('mz_henitsoa.settings')
+      ->set('selected_school_year', trim((string) $school_year))
+      ->save();
+  }
+
+  /**
+   * Returns configured school-year options from inscription field.
+   *
+   * @return string[]
+   */
+  public function getSchoolYearOptions() {
+    $field = \Drupal::service('entity_field.manager')
+      ->getFieldDefinitions('node', 'inscription')['field_annee_scolaire'];
+    $years = array_keys($field->getSettings()['allowed_values']);
+    rsort($years);
+    return $years;
   }
 
   /**
