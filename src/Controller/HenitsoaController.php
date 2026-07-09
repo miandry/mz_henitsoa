@@ -1111,71 +1111,83 @@ class HenitsoaController extends ControllerBase {
   }
 
   /**
-   * Creates a new "ecolage" (tuition payment) node.
+   * Creates one or more "ecolage" (tuition payment) nodes.
    *
-   * Expects a JSON body: {"inscrit_nid": N, "mois_tid": N,
+   * Expects a JSON body: {"inscrit_nid": N, "mois_tid": N} or
+   * {"inscrit_nid": N, "mois_tids": [N, N, ...],
    * "annee_scolaire": "2025 -2026", "montant": 30000, "status": "1"}.
    * Rejects duplicates (same inscription + month), mirroring
-   * _unique_title_validate() in mz_henitsoa.module. Saving the node
+   * _unique_title_validate() in mz_henitsoa.module. Saving each node
    * automatically updates the inscription's field_ecolage_status via the
    * existing mz_henitsoa_node_insert() hook.
    */
   public function createEcolage(Request $request) {
     $data = json_decode($request->getContent(), TRUE) ?: [];
     $inscrit_nid = (int) ($data['inscrit_nid'] ?? 0);
-    $mois_tid = (int) ($data['mois_tid'] ?? 0);
     $annee_scolaire = trim((string) ($data['annee_scolaire'] ?? ''));
     $montant = (int) ($data['montant'] ?? 0);
     $status = (string) ($data['status'] ?? '1');
+    $mois_tids = [];
 
-    if (!$inscrit_nid || !$mois_tid || $annee_scolaire === '') {
-      return new JsonResponse(['status' => 'error', 'message' => 'Inscription, mois et année scolaire sont requis.'], 422);
+    if (!empty($data['mois_tids']) && is_array($data['mois_tids'])) {
+      $mois_tids = array_values(array_unique(array_filter(array_map('intval', $data['mois_tids']))));
+    }
+    elseif (!empty($data['mois_tid'])) {
+      $mois_tids = [(int) $data['mois_tid']];
+    }
+
+    if (!$inscrit_nid || empty($mois_tids) || $annee_scolaire === '') {
+      return new JsonResponse(['status' => 'error', 'message' => 'Inscription, au moins un mois et année scolaire sont requis.'], 422);
     }
 
     $inscrit = Node::load($inscrit_nid);
     if (!$inscrit || $inscrit->bundle() !== 'inscription') {
       return new JsonResponse(['status' => 'error', 'message' => "Inscription introuvable."], 422);
     }
-    $mois = Term::load($mois_tid);
-    if (!$mois || $mois->bundle() !== 'mois') {
-      return new JsonResponse(['status' => 'error', 'message' => "Mois introuvable."], 422);
-    }
-
-    $duplicate = \Drupal::service('mz_henitsoa.default')->checkifEcolageExist($inscrit_nid, $mois_tid);
-    if ($duplicate) {
-      return new JsonResponse([
-        'status' => 'error',
-        'message' => 'Un écolage pour ce mois existe déjà pour cette inscription.',
-      ], 409);
-    }
 
     $mode_paiement = trim((string) ($data['mode_paiement'] ?? ''));
     $date_paiement = trim((string) ($data['date_paiement'] ?? date('Y-m-d')));
-    $suivi_service = \Drupal::service('mz_henitsoa.ecolage_suivi');
-    $receipt = $suivi_service->generateReceiptNumber();
-    $description_parts = ["Reçu: $receipt", "Date: $date_paiement"];
-    if ($mode_paiement !== '') {
-      $description_parts[] = 'Mode: ' . $mode_paiement;
-    }
-
-    $node = Node::create([
-      'type' => 'ecolage',
-      'title' => date('Ymd') . '_' . uniqid(),
-      'field_inscrit' => ['target_id' => $inscrit_nid],
-      'field_mois' => ['target_id' => $mois_tid],
-      'field_annee_scolaire' => $annee_scolaire,
-      'field_montant' => $montant,
-      'field_status' => $status,
-      'field_description' => implode(' | ', $description_parts),
-      'status' => 1,
-    ]);
-    $node->save();
-
     $statuses = $this->getEcolageStatusOptions();
+    $suivi_service = \Drupal::service('mz_henitsoa.ecolage_suivi');
+    $items = [];
+    $skipped = [];
 
-    return new JsonResponse([
-      'status' => 'success',
-      'item' => [
+    foreach ($mois_tids as $mois_tid) {
+      $mois = Term::load($mois_tid);
+      if (!$mois || $mois->bundle() !== 'mois') {
+        return new JsonResponse(['status' => 'error', 'message' => "Mois introuvable (ID $mois_tid)."], 422);
+      }
+
+      $duplicate = \Drupal::service('mz_henitsoa.default')->checkifEcolageExist($inscrit_nid, $mois_tid);
+      if ($duplicate) {
+        $skipped[] = [
+          'mois_tid' => $mois_tid,
+          'mois' => $mois->label(),
+          'message' => 'Un écolage pour ce mois existe déjà pour cette inscription.',
+        ];
+        continue;
+      }
+
+      $receipt = $suivi_service->generateReceiptNumber();
+      $description_parts = ["Reçu: $receipt", "Date: $date_paiement"];
+      if ($mode_paiement !== '') {
+        $description_parts[] = 'Mode: ' . $mode_paiement;
+      }
+
+      $node = Node::create([
+        'type' => 'ecolage',
+        'title' => date('Ymd') . '_' . uniqid(),
+        'field_inscrit' => ['target_id' => $inscrit_nid],
+        'field_mois' => ['target_id' => $mois_tid],
+        'field_annee_scolaire' => $annee_scolaire,
+        'field_montant' => $montant,
+        'field_status' => $status,
+        'field_description' => implode(' | ', $description_parts),
+        'status' => 1,
+      ]);
+      $node->save();
+
+      $items[] = [
         'id' => (int) $node->id(),
         'eleve' => $inscrit->label(),
         'mois' => $mois->label(),
@@ -1186,8 +1198,26 @@ class HenitsoaController extends ControllerBase {
         'receipt_number' => $receipt,
         'mode_paiement' => $mode_paiement,
         'date_paiement' => $date_paiement,
-      ],
-    ], 201);
+      ];
+    }
+
+    if (empty($items)) {
+      return new JsonResponse([
+        'status' => 'error',
+        'message' => 'Aucun écolage créé. Tous les mois sélectionnés existent déjà pour cette inscription.',
+        'skipped' => $skipped,
+      ], 409);
+    }
+
+    $response = [
+      'status' => 'success',
+      'created' => count($items),
+      'items' => $items,
+      'item' => $items[0],
+      'skipped' => $skipped,
+    ];
+
+    return new JsonResponse($response, 201);
   }
 
   /**
